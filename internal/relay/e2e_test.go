@@ -31,6 +31,31 @@ func newE2ERouter(t *testing.T) (*relay.Router, noise.DHKey) {
 	return router, relayKey
 }
 
+// readyRouter wraps a session.Handler and signals readyCh when
+// OnReceiveConnect is called. This replaces time.Sleep synchronisation
+// with a proper channel signal — the test waits on readyCh before pushing.
+type readyRouter struct {
+	inner   session.Handler
+	readyCh chan struct{}
+}
+
+func newReadyRouter(inner session.Handler) *readyRouter {
+	return &readyRouter{inner: inner, readyCh: make(chan struct{}, 1)}
+}
+
+func (rr *readyRouter) OnPush(ctx context.Context, body []byte) error {
+	return rr.inner.OnPush(ctx, body)
+}
+
+func (rr *readyRouter) OnReceiveConnect(ctx context.Context, key relay.RecipientKey) <-chan []byte {
+	ch := rr.inner.OnReceiveConnect(ctx, key)
+	select {
+	case rr.readyCh <- struct{}{}:
+	default:
+	}
+	return ch
+}
+
 // E2E: device A pushes, device B (online) receives immediately.
 func TestE2E_PushDeliverOnline(t *testing.T) {
 	router, relayKey := newE2ERouter(t)
@@ -40,17 +65,25 @@ func TestE2E_PushDeliverOnline(t *testing.T) {
 		t.Fatalf("device key: %v", err)
 	}
 
+	// Wrap the router so we know when the Receive Session is registered.
+	rr := newReadyRouter(router)
+
 	// Device B opens a Receive Session
 	clientReceive, serverReceive := net.Pipe()
 	defer clientReceive.Close()
 	receiveCtx, receiveCancel := context.WithCancel(context.Background())
 	defer receiveCancel()
 	go func() {
-		session.AcceptReceive(serverReceive, relayKey, router) //nolint:errcheck
+		session.AcceptReceive(serverReceive, relayKey, rr) //nolint:errcheck
 	}()
 	cs2 := doXXHandshake(t, clientReceive, deviceKey)
 
-	time.Sleep(20 * time.Millisecond) // let session register in router
+	// Wait for OnReceiveConnect to fire — no time.Sleep.
+	select {
+	case <-rr.readyCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Receive Session not registered in router within deadline")
+	}
 
 	// Device A opens a Push Session and sends a blob to device B
 	envelope := []byte("hello-device-b")
@@ -93,10 +126,10 @@ func TestE2E_PushDeliverOffline(t *testing.T) {
 	go func() {
 		session.AcceptPush(serverPush, relayKey, router) //nolint:errcheck
 	}()
+	// doPushSession returns after the Ack is received, meaning the blob is
+	// already committed to the store. No sleep needed after this point.
 	doPushSession(t, clientPush, relayKey.Public, deviceKey.Public, envelope)
 	clientPush.Close()
-
-	time.Sleep(20 * time.Millisecond)
 
 	// Device connects after the push
 	clientReceive, serverReceive := net.Pipe()

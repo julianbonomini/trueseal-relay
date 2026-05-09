@@ -2,7 +2,9 @@ package sqlite_test
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -217,5 +219,49 @@ func TestReap_DeletesExpiredOnly(t *testing.T) {
 	}
 	if len(got) != 1 || string(got[0]) != "live" {
 		t.Errorf("want ['live'] after reap, got %v", got)
+	}
+}
+
+// ── T7: Concurrent Flush ───────────────────────────────────────────────────
+
+// Two goroutines calling Flush for the same key simultaneously must together
+// receive exactly N envelopes — no double delivery (atomicity) and no loss
+// (serialised via single DB connection).
+func TestFlush_ConcurrentSameKey(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	const N = 5
+	for i := 0; i < N; i++ {
+		env := []byte(fmt.Sprintf("env-%d", i))
+		if err := s.Put(ctx, keyA, env, time.Hour); err != nil {
+			t.Fatalf("Put[%d]: %v", i, err)
+		}
+	}
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var allGot [][]byte
+
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			got, err := s.Flush(ctx, keyA)
+			if err != nil {
+				// Serialization conflict: the other goroutine already holds the
+				// transaction lock. This is acceptable — those envelopes were
+				// or will be delivered by the winning goroutine.
+				return
+			}
+			mu.Lock()
+			allGot = append(allGot, got...)
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+
+	if len(allGot) != N {
+		t.Errorf("want %d total envelopes (no double delivery, no loss), got %d", N, len(allGot))
 	}
 }

@@ -3,6 +3,7 @@ package relay_test
 import (
 	"context"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -101,8 +102,9 @@ func TestRouter_OnlineDelivery(t *testing.T) {
 	defer cancel()
 	ch := r.OnReceiveConnect(devCtx, recipientA)
 
-	// Give goroutine time to subscribe before pushing.
-	time.Sleep(10 * time.Millisecond)
+	// OnReceiveConnect registers the subscription synchronously before returning,
+	// so no sleep is needed here — the notifier will buffer the signal if the
+	// delivery goroutine hasn't started yet.
 
 	r.OnPush(ctx, pushBody(make32(0xAA), []byte("live-blob"))) //nolint:errcheck
 
@@ -153,6 +155,104 @@ func TestRouter_DisconnectClosesChannel(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Error("want channel closed within 1s")
+	}
+}
+
+// ── T6: Concurrent sessions + reconnect ────────────────────────────────────
+
+// Two concurrent Receive Sessions for the same device key must not
+// double-deliver a blob. Flush is atomic (serialisable SQLite transaction),
+// so only one session wins the Flush; the other sees an empty result.
+func TestRouter_TwoConcurrentReceiveSessions_NoDoubleDelivery(t *testing.T) {
+	r := newRouter(t)
+	ctx := context.Background()
+
+	// Store a blob before any session opens
+	if err := r.OnPush(ctx, pushBody(make32(0xAA), []byte("blob"))); err != nil {
+		t.Fatalf("OnPush: %v", err)
+	}
+
+	ctx1, cancel1 := context.WithCancel(ctx)
+	ctx2, cancel2 := context.WithCancel(ctx)
+	defer cancel1()
+	defer cancel2()
+
+	ch1 := r.OnReceiveConnect(ctx1, recipientA)
+	ch2 := r.OnReceiveConnect(ctx2, recipientA)
+
+	// Drain both channels concurrently and collect all delivered blobs
+	var mu sync.Mutex
+	var got [][]byte
+	var wg sync.WaitGroup
+
+	drain := func(ch <-chan []byte, cancel context.CancelFunc) {
+		defer wg.Done()
+		for {
+			select {
+			case blob, ok := <-ch:
+				if !ok {
+					return
+				}
+				mu.Lock()
+				got = append(got, blob)
+				mu.Unlock()
+			case <-time.After(300 * time.Millisecond):
+				// No more blobs within window — close this session
+				cancel()
+				return
+			}
+		}
+	}
+
+	wg.Add(2)
+	go drain(ch1, cancel1)
+	go drain(ch2, cancel2)
+	wg.Wait()
+
+	if len(got) != 1 {
+		t.Errorf("want exactly 1 delivery across both sessions, got %d: %v", len(got), got)
+	}
+}
+
+// Device connects, receives a blob, disconnects, then reconnects.
+// The blob must not be delivered again (it was deleted by the first Flush).
+func TestRouter_ReconnectNoDoubleDelivery(t *testing.T) {
+	r := newRouter(t)
+	ctx := context.Background()
+
+	// First session
+	ctx1, cancel1 := context.WithCancel(ctx)
+	ch1 := r.OnReceiveConnect(ctx1, recipientA)
+
+	// Push a blob
+	if err := r.OnPush(ctx, pushBody(make32(0xAA), []byte("blob"))); err != nil {
+		t.Fatalf("OnPush: %v", err)
+	}
+
+	// Receive on first session
+	select {
+	case blob := <-ch1:
+		if string(blob) != "blob" {
+			t.Errorf("want 'blob', got %q", blob)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("blob not received on first session")
+	}
+
+	// Disconnect first session
+	cancel1()
+
+	// Reconnect
+	ctx2, cancel2 := context.WithCancel(ctx)
+	defer cancel2()
+	ch2 := r.OnReceiveConnect(ctx2, recipientA)
+
+	// Must not receive the blob again — it was deleted by the first Flush
+	select {
+	case blob := <-ch2:
+		t.Errorf("want no delivery on reconnect, got: %q", blob)
+	case <-time.After(200 * time.Millisecond):
+		// good — no double delivery
 	}
 }
 

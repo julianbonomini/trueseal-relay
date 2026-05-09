@@ -12,19 +12,28 @@ import (
 )
 
 // receiveHandler records OnReceiveConnect calls and delivers blobs via a channel.
+// connectedCh is signalled (with the device key) when OnReceiveConnect fires,
+// allowing tests to synchronise without time.Sleep.
 type receiveHandler struct {
-	connectedKey relay.RecipientKey
-	deliverCh    chan []byte
+	connectedCh chan relay.RecipientKey
+	deliverCh   chan []byte
 }
 
 func newReceiveHandler() *receiveHandler {
-	return &receiveHandler{deliverCh: make(chan []byte, 8)}
+	return &receiveHandler{
+		connectedCh: make(chan relay.RecipientKey, 1),
+		deliverCh:   make(chan []byte, 8),
+	}
 }
 
 func (h *receiveHandler) OnPush(_ context.Context, _ []byte) error { return nil }
 
 func (h *receiveHandler) OnReceiveConnect(_ context.Context, key relay.RecipientKey) <-chan []byte {
-	h.connectedKey = key
+	// Signal the key before returning so tests can synchronise via connectedCh.
+	select {
+	case h.connectedCh <- key:
+	default:
+	}
 	return h.deliverCh
 }
 
@@ -41,10 +50,14 @@ func TestAcceptReceive_ExtractsDeviceKey(t *testing.T) {
 	// Client: XX handshake
 	cs1, cs2 := doXXHandshake(t, client, relayKey.Public, deviceKey)
 
-	// Handler received device's public key
-	time.Sleep(20 * time.Millisecond)
-	if h.connectedKey != relay.RecipientKey(deviceKey.Public) {
-		t.Errorf("want device key %x, got %x", deviceKey.Public, h.connectedKey)
+	// Wait for OnReceiveConnect via channel — no time.Sleep, no data race.
+	select {
+	case got := <-h.connectedCh:
+		if got != relay.RecipientKey(deviceKey.Public) {
+			t.Errorf("want device key %x, got %x", deviceKey.Public, got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("OnReceiveConnect was not called within deadline")
 	}
 
 	client.Close()
@@ -63,7 +76,12 @@ func TestAcceptReceive_DeliversBlobs(t *testing.T) {
 
 	_, cs2 := doXXHandshake(t, client, relayKey.Public, deviceKey)
 
-	time.Sleep(20 * time.Millisecond)
+	// Wait for session to be established before delivering.
+	select {
+	case <-h.connectedCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("OnReceiveConnect not called within deadline")
+	}
 
 	// Push a blob via the deliver channel
 	h.deliverCh <- []byte("blob-for-device")
@@ -98,7 +116,12 @@ func TestAcceptReceive_EchoesHeartbeat(t *testing.T) {
 
 	cs1, cs2 := doXXHandshake(t, client, relayKey.Public, deviceKey)
 
-	time.Sleep(20 * time.Millisecond)
+	// Wait for session to be established before sending heartbeat.
+	select {
+	case <-h.connectedCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("OnReceiveConnect not called within deadline")
+	}
 
 	// Send Heartbeat
 	hb, _ := cs1.Encrypt(nil, nil, session.Frame(session.MsgTypeHeartbeat, nil))
@@ -167,6 +190,109 @@ func (h *subscribeFailHandler) OnReceiveConnect(_ context.Context, _ relay.Recip
 	ch := make(chan []byte)
 	close(ch)
 	return ch
+}
+
+// ── T4: Security tests ────────────────────────────────────────────────────────
+
+// Noise XX does not reject unknown device keys — the relay accepts any device
+// (any-to-any auth). What the relay DOES reject is a tampered handshake
+// message: corrupted bytes cause AEAD authentication to fail.
+//
+// This test verifies that AcceptReceive returns an error when the third
+// handshake message (s, se) is corrupted.
+func TestAcceptReceive_TamperedHandshakeRejected(t *testing.T) {
+	relayKey, _ := noise.DH25519.GenerateKeypair(nil)
+	deviceKey, _ := noise.DH25519.GenerateKeypair(nil)
+
+	client, server := net.Pipe()
+
+	acceptDone := make(chan error, 1)
+	go func() {
+		acceptDone <- session.AcceptReceive(server, relayKey, newReceiveHandler())
+	}()
+
+	// Perform the first two XX messages normally
+	cfg := noise.Config{
+		CipherSuite:   noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashBLAKE2s),
+		Pattern:       noise.HandshakeXX,
+		Initiator:     true,
+		StaticKeypair: deviceKey,
+	}
+	hs, err := noise.NewHandshakeState(cfg)
+	if err != nil {
+		t.Fatalf("XX handshake state: %v", err)
+	}
+
+	// → e
+	msg, _, _, err := hs.WriteMessage(nil, nil)
+	if err != nil {
+		t.Fatalf("XX write e: %v", err)
+	}
+	writeMsg(t, client, msg)
+
+	// ← e, ee, s, es
+	resp := readMsg(t, client)
+	if _, _, _, err = hs.ReadMessage(nil, resp); err != nil {
+		t.Fatalf("XX read e,ee,s,es: %v", err)
+	}
+
+	// Build the third message (s, se) but corrupt it before sending
+	msg3, _, _, err := hs.WriteMessage(nil, nil)
+	if err != nil {
+		t.Fatalf("XX write s,se: %v", err)
+	}
+	// Flip the last byte to corrupt the AEAD authentication tag
+	msg3[len(msg3)-1] ^= 0xFF
+	writeMsg(t, client, msg3)
+
+	// AcceptReceive must return an error (not hang, not accept the session)
+	select {
+	case err := <-acceptDone:
+		if err == nil {
+			t.Error("want error on tampered handshake, got nil")
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("AcceptReceive did not return after tampered handshake")
+	}
+	client.Close()
+}
+
+// ── T5: Error path coverage ───────────────────────────────────────────────────
+
+// AcceptReceive returns nil (not an error) when the connection is closed by
+// the peer — this exercises isClosedErr.
+func TestAcceptReceive_ClosedConnReturnsNil(t *testing.T) {
+	relayKey, _ := noise.DH25519.GenerateKeypair(nil)
+	deviceKey, _ := noise.DH25519.GenerateKeypair(nil)
+
+	client, server := net.Pipe()
+	h := newReceiveHandler()
+
+	acceptDone := make(chan error, 1)
+	go func() {
+		acceptDone <- session.AcceptReceive(server, relayKey, h)
+	}()
+
+	doXXHandshake(t, client, relayKey.Public, deviceKey)
+
+	// Wait for the session to be established
+	select {
+	case <-h.connectedCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("OnReceiveConnect not called within deadline")
+	}
+
+	// Close the client — server reads return "use of closed network connection"
+	client.Close()
+
+	select {
+	case err := <-acceptDone:
+		if err != nil {
+			t.Errorf("want nil for closed-conn error, got: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("AcceptReceive did not return after connection closed")
+	}
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
