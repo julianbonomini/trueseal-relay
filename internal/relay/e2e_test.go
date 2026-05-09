@@ -1,0 +1,199 @@
+package relay_test
+
+import (
+	"context"
+	"net"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/flynn/noise"
+	"github.com/julianbonomini/hush-relay/internal/notify/inprocess"
+	"github.com/julianbonomini/hush-relay/internal/relay"
+	"github.com/julianbonomini/hush-relay/internal/session"
+	sqlitestore "github.com/julianbonomini/hush-relay/internal/store/sqlite"
+)
+
+func newE2ERouter(t *testing.T) (*relay.Router, noise.DHKey) {
+	t.Helper()
+	store, err := sqlitestore.New(filepath.Join(t.TempDir(), "e2e.db"))
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	relayKey, err := noise.DH25519.GenerateKeypair(nil)
+	if err != nil {
+		t.Fatalf("relay key: %v", err)
+	}
+
+	router := relay.NewRouter(store, inprocess.New(), relay.DefaultTTL)
+	return router, relayKey
+}
+
+// E2E: device A pushes, device B (online) receives immediately.
+func TestE2E_PushDeliverOnline(t *testing.T) {
+	router, relayKey := newE2ERouter(t)
+
+	deviceKey, err := noise.DH25519.GenerateKeypair(nil)
+	if err != nil {
+		t.Fatalf("device key: %v", err)
+	}
+
+	// Device B opens a Receive Session
+	clientReceive, serverReceive := net.Pipe()
+	defer clientReceive.Close()
+	receiveCtx, receiveCancel := context.WithCancel(context.Background())
+	defer receiveCancel()
+	go func() {
+		session.AcceptReceive(serverReceive, relayKey, router) //nolint:errcheck
+	}()
+	cs2 := doXXHandshake(t, clientReceive, deviceKey)
+
+	time.Sleep(20 * time.Millisecond) // let session register in router
+
+	// Device A opens a Push Session and sends a blob to device B
+	envelope := []byte("hello-device-b")
+	clientPush, serverPush := net.Pipe()
+	go func() {
+		session.AcceptPush(serverPush, relayKey, router) //nolint:errcheck
+	}()
+	doPushSession(t, clientPush, relayKey.Public, deviceKey.Public, envelope)
+	clientPush.Close()
+
+	// Device B receives the Deliver frame
+	clientReceive.SetDeadline(time.Now().Add(2 * time.Second))
+	raw := readMsg(t, clientReceive)
+	plain, err := cs2.Decrypt(nil, nil, raw)
+	if err != nil {
+		t.Fatalf("decrypt deliver: %v", err)
+	}
+	typ, body, ok := session.Parse(plain)
+	if !ok || typ != session.MsgTypeDeliver {
+		t.Fatalf("want Deliver, got type=%02x ok=%v", typ, ok)
+	}
+	if string(body) != string(envelope) {
+		t.Errorf("want %q, got %q", envelope, body)
+	}
+	_ = receiveCtx
+}
+
+// E2E: blob pushed while device offline; device connects later and receives on connect.
+func TestE2E_PushDeliverOffline(t *testing.T) {
+	router, relayKey := newE2ERouter(t)
+
+	deviceKey, err := noise.DH25519.GenerateKeypair(nil)
+	if err != nil {
+		t.Fatalf("device key: %v", err)
+	}
+
+	// Push first — no Receive Session open yet
+	envelope := []byte("offline-blob")
+	clientPush, serverPush := net.Pipe()
+	go func() {
+		session.AcceptPush(serverPush, relayKey, router) //nolint:errcheck
+	}()
+	doPushSession(t, clientPush, relayKey.Public, deviceKey.Public, envelope)
+	clientPush.Close()
+
+	time.Sleep(20 * time.Millisecond)
+
+	// Device connects after the push
+	clientReceive, serverReceive := net.Pipe()
+	defer clientReceive.Close()
+	go func() {
+		session.AcceptReceive(serverReceive, relayKey, router) //nolint:errcheck
+	}()
+	cs2 := doXXHandshake(t, clientReceive, deviceKey)
+
+	// Expect immediate flush on connect
+	clientReceive.SetDeadline(time.Now().Add(2 * time.Second))
+	raw := readMsg(t, clientReceive)
+	plain, err := cs2.Decrypt(nil, nil, raw)
+	if err != nil {
+		t.Fatalf("decrypt deliver: %v", err)
+	}
+	typ, body, ok := session.Parse(plain)
+	if !ok || typ != session.MsgTypeDeliver {
+		t.Fatalf("want Deliver, got type=%02x ok=%v", typ, ok)
+	}
+	if string(body) != string(envelope) {
+		t.Errorf("want %q, got %q", envelope, body)
+	}
+}
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+// doPushSession performs a full NK push: handshake + Push frame + receive Ack.
+func doPushSession(t *testing.T, conn net.Conn, relayPub []byte, recipientPub []byte, envelope []byte) {
+	t.Helper()
+	cfg := noise.Config{
+		CipherSuite: noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashBLAKE2s),
+		Pattern:     noise.HandshakeNK,
+		Initiator:   true,
+		PeerStatic:  relayPub,
+	}
+	hs, err := noise.NewHandshakeState(cfg)
+	if err != nil {
+		t.Fatalf("NK hs: %v", err)
+	}
+
+	msg, _, _, err := hs.WriteMessage(nil, nil)
+	if err != nil {
+		t.Fatalf("NK write e: %v", err)
+	}
+	writeMsg(t, conn, msg)
+
+	resp := readMsg(t, conn)
+	_, cs1, _, err := hs.ReadMessage(nil, resp)
+	if err != nil {
+		t.Fatalf("NK read resp: %v", err)
+	}
+
+	body := make([]byte, 32+len(envelope))
+	copy(body[:32], recipientPub)
+	copy(body[32:], envelope)
+
+	frame, err := cs1.Encrypt(nil, nil, session.Frame(session.MsgTypePush, body))
+	if err != nil {
+		t.Fatalf("encrypt push: %v", err)
+	}
+	writeMsg(t, conn, frame)
+
+	conn.SetDeadline(time.Now().Add(2 * time.Second))
+	readMsg(t, conn) // Ack
+}
+
+// doXXHandshake performs a Noise XX handshake as the device (initiator).
+// Returns the responder→initiator CipherState for decrypting Deliver frames.
+func doXXHandshake(t *testing.T, conn net.Conn, deviceKey noise.DHKey) *noise.CipherState {
+	t.Helper()
+	cfg := noise.Config{
+		CipherSuite:   noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashBLAKE2s),
+		Pattern:       noise.HandshakeXX,
+		Initiator:     true,
+		StaticKeypair: deviceKey,
+	}
+	hs, err := noise.NewHandshakeState(cfg)
+	if err != nil {
+		t.Fatalf("XX hs: %v", err)
+	}
+
+	msg, _, _, err := hs.WriteMessage(nil, nil)
+	if err != nil {
+		t.Fatalf("XX write e: %v", err)
+	}
+	writeMsg(t, conn, msg)
+
+	resp := readMsg(t, conn)
+	if _, _, _, err = hs.ReadMessage(nil, resp); err != nil {
+		t.Fatalf("XX read e,ee,s,es: %v", err)
+	}
+
+	msg, _, cs2, err := hs.WriteMessage(nil, nil)
+	if err != nil {
+		t.Fatalf("XX write s,se: %v", err)
+	}
+	writeMsg(t, conn, msg)
+	return cs2
+}

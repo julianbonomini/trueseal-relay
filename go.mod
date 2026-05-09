@@ -3,6 +3,7 @@ module github.com/julianbonomini/hush-relay
 go 1.26.2
 
 require (
+	github.com/BurntSushi/toml v1.5.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/flynn/noise v1.1.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
