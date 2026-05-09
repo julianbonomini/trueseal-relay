@@ -16,6 +16,11 @@ const (
 	// without sender identity on NK sessions; NK already authenticates the relay so
 	// a well-formed Ack is sufficient proof of persistence.
 	MsgTypeAck MsgType = 0x04
+	// MsgTypeError body: empty.
+	// Semantic: permanent rejection — the relay will not store the blob.
+	// The client must NOT retry the same blob (non-retryable).
+	// Sent when OnPush returns an error (e.g. oversized envelope). See ADR-0008.
+	MsgTypeError MsgType = 0x05
 )
 
 // Frame encodes a typed message into wire bytes.
@@ -39,7 +44,7 @@ func Parse(raw []byte) (MsgType, []byte, bool) {
 	}
 	t := MsgType(raw[0])
 	switch t {
-	case MsgTypePush, MsgTypeDeliver, MsgTypeHeartbeat, MsgTypeAck:
+	case MsgTypePush, MsgTypeDeliver, MsgTypeHeartbeat, MsgTypeAck, MsgTypeError:
 	default:
 		return 0, nil, false
 	}

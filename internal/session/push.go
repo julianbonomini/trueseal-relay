@@ -68,7 +68,12 @@ func AcceptPush(conn net.Conn, relayKey noise.DHKey, handler Handler) error {
 		}
 
 		if err := handler.OnPush(ctx, body); err != nil {
-			// store failed — do not Ack
+			// Permanent rejection — send Error frame so the client does not retry.
+			// Do NOT Ack, do NOT store the blob (ADR-0008).
+			errFrame, encErr := cs2.Encrypt(nil, nil, Frame(MsgTypeError, nil))
+			if encErr == nil {
+				_ = writeNoiseMsg(conn, errFrame) // best-effort; ignore send failure
+			}
 			continue
 		}
 

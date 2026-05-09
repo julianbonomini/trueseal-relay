@@ -358,7 +358,7 @@ func TestAcceptPush_ClosedConnReturnsNil(t *testing.T) {
 }
 
 // AcceptPush does NOT send Ack when OnPush returns an error.
-// This verifies that the store-fail path in push.go skips the Ack.
+// Instead it sends an Error (0x05) frame so the client knows not to retry.
 func TestAcceptPush_NoAckOnOnPushError(t *testing.T) {
 	relayKey, err := noise.DH25519.GenerateKeypair(nil)
 	if err != nil {
@@ -389,7 +389,7 @@ func TestAcceptPush_NoAckOnOnPushError(t *testing.T) {
 	}
 	client.Write(encodeMsg(msg)) //nolint:errcheck
 	resp := readMsg(t, client)
-	_, cs1, _, err := hs.ReadMessage(nil, resp)
+	_, cs1, cs2, err := hs.ReadMessage(nil, resp)
 	if err != nil {
 		t.Fatalf("NK read resp: %v", err)
 	}
@@ -403,11 +403,22 @@ func TestAcceptPush_NoAckOnOnPushError(t *testing.T) {
 	}
 	client.Write(encodeMsg(encrypted)) //nolint:errcheck
 
-	// No Ack should arrive — handler returned an error so Ack is withheld
-	client.SetDeadline(time.Now().Add(100 * time.Millisecond))
-	_, readErr := io.ReadFull(client, make([]byte, 2))
-	if readErr == nil {
-		t.Error("want no Ack when OnPush returns error, but received data")
+	// Expect an Error frame — not an Ack
+	client.SetDeadline(time.Now().Add(2 * time.Second))
+	responseRaw := readMsg(t, client)
+	responseDecrypted, dErr := cs2.Decrypt(nil, nil, responseRaw)
+	if dErr != nil {
+		t.Fatalf("decrypt response: %v", dErr)
+	}
+	typ, _, ok := session.Parse(responseDecrypted)
+	if !ok {
+		t.Fatalf("want parseable frame, got unparseable bytes")
+	}
+	if typ == session.MsgTypeAck {
+		t.Error("want Error frame (not Ack) when OnPush returns error, but got Ack")
+	}
+	if typ != session.MsgTypeError {
+		t.Errorf("want MsgTypeError (0x05), got type=0x%02x", typ)
 	}
 
 	client.Close()
@@ -483,6 +494,75 @@ func TestAcceptPush_MultiplePushFrames(t *testing.T) {
 		if string(handler.pushed[i]) != string(env) {
 			t.Errorf("handler.pushed[%d]: want %q, got %q", i, env, handler.pushed[i])
 		}
+	}
+
+	client.Close()
+}
+
+// AcceptPush: when OnPush returns an error, relay sends an Error (0x05) frame.
+// The blob must NOT be stored and no Ack must be sent.
+func TestAcceptPush_ErrorFrameOnOnPushError(t *testing.T) {
+	relayKey, err := noise.DH25519.GenerateKeypair(nil)
+	if err != nil {
+		t.Fatalf("generate relay key: %v", err)
+	}
+
+	client, server := net.Pipe()
+	handler := &mockHandler{err: errors.New("oversized envelope")}
+
+	go func() {
+		session.AcceptPush(server, relayKey, handler) //nolint:errcheck
+	}()
+
+	// NK handshake
+	cfg := noise.Config{
+		CipherSuite: noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashBLAKE2s),
+		Pattern:     noise.HandshakeNK,
+		Initiator:   true,
+		PeerStatic:  relayKey.Public,
+	}
+	hs, err := noise.NewHandshakeState(cfg)
+	if err != nil {
+		t.Fatalf("NK handshake state: %v", err)
+	}
+	msg, _, _, err := hs.WriteMessage(nil, nil)
+	if err != nil {
+		t.Fatalf("NK write e: %v", err)
+	}
+	client.Write(encodeMsg(msg)) //nolint:errcheck
+	resp := readMsg(t, client)
+	_, cs1, cs2, err := hs.ReadMessage(nil, resp)
+	if err != nil {
+		t.Fatalf("NK read resp: %v", err)
+	}
+
+	// Send Push frame
+	env := []byte("oversized-envelope-bytes")
+	push := session.Frame(session.MsgTypePush, env)
+	encrypted, err := cs1.Encrypt(nil, nil, push)
+	if err != nil {
+		t.Fatalf("encrypt push: %v", err)
+	}
+	client.Write(encodeMsg(encrypted)) //nolint:errcheck
+
+	// Expect an Error frame (not Ack, not silence)
+	client.SetDeadline(time.Now().Add(2 * time.Second))
+	errRaw := readMsg(t, client)
+	errDecrypted, err := cs2.Decrypt(nil, nil, errRaw)
+	if err != nil {
+		t.Fatalf("decrypt response: %v", err)
+	}
+	typ, _, ok := session.Parse(errDecrypted)
+	if !ok {
+		t.Fatalf("want parseable Error frame, got unparseable bytes")
+	}
+	if typ != session.MsgTypeError {
+		t.Errorf("want MsgTypeError (0x05), got type=0x%02x", typ)
+	}
+
+	// OnPush was called (returning error means "not stored") — no Ack must follow
+	if len(handler.pushed) != 1 {
+		t.Errorf("want OnPush called once, got %d", len(handler.pushed))
 	}
 
 	client.Close()
