@@ -37,7 +37,7 @@ func TestGracefulShutdown_WaitsForActiveSession(t *testing.T) {
 		t.Fatalf("device key: %v", err)
 	}
 
-	router := relay.NewRouter(store, inprocess.New(), relay.DefaultTTL)
+	router := relay.NewRouter(store, inprocess.New(), relay.DefaultTTL, 0)
 
 	// Wiring identical to main: WaitGroup tracks active sessions.
 	var wg sync.WaitGroup

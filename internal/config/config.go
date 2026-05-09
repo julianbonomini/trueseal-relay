@@ -9,6 +9,10 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+// DefaultMaxEnvelopeBytes is the default maximum envelope size (1 MiB).
+// Applied to body[32:] of every Push frame — the raw protobuf Envelope bytes.
+const DefaultMaxEnvelopeBytes = 1 << 20 // 1 MiB
+
 // DefaultTTL is the default envelope TTL (30 days).
 const DefaultTTL = 30 * 24 * time.Hour
 
@@ -24,11 +28,15 @@ type Config struct {
 
 // RelayConfig holds relay-level settings.
 type RelayConfig struct {
-	KeypairPath   string        `toml:"keypair_path"`
-	ListenPush    string        `toml:"listen_push"`
-	ListenReceive string        `toml:"listen_receive"`
-	TTL           time.Duration `toml:"ttl"`
-	ReapInterval  time.Duration `toml:"reap_interval"`
+	KeypairPath      string        `toml:"keypair_path"`
+	ListenPush       string        `toml:"listen_push"`
+	ListenReceive    string        `toml:"listen_receive"`
+	TTL              time.Duration `toml:"ttl"`
+	ReapInterval     time.Duration `toml:"reap_interval"`
+	// MaxEnvelopeBytes is the maximum size of the protobuf Envelope bytes
+	// (body[32:] of the Push frame body). Blobs exceeding this limit are rejected
+	// without Ack. See ADR-0008.
+	MaxEnvelopeBytes int64         `toml:"max_envelope_bytes"`
 }
 
 // StoreConfig holds storage adapter settings.
@@ -74,6 +82,9 @@ func setDefaults(cfg *Config) {
 	if cfg.Relay.ListenReceive == "" {
 		cfg.Relay.ListenReceive = ":7700"
 	}
+	if cfg.Relay.MaxEnvelopeBytes <= 0 {
+		cfg.Relay.MaxEnvelopeBytes = DefaultMaxEnvelopeBytes
+	}
 	if cfg.Store.Type == "" {
 		cfg.Store.Type = "sqlite"
 	}
@@ -107,6 +118,14 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.Relay.ReapInterval = d
 		} else {
 			log.Printf("config: ignoring invalid HUSH_RELAY_REAP_INTERVAL %q: %v", v, err)
+		}
+	}
+	if v := os.Getenv("HUSH_RELAY_MAX_ENVELOPE_BYTES"); v != "" {
+		var n int64
+		if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n > 0 {
+			cfg.Relay.MaxEnvelopeBytes = n
+		} else {
+			log.Printf("config: ignoring invalid HUSH_RELAY_MAX_ENVELOPE_BYTES %q", v)
 		}
 	}
 }

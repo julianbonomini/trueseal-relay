@@ -74,7 +74,7 @@ func main() {
 	}
 
 	notifier := inprocess.New()
-	router := relay.NewRouter(inbox, notifier, cfg.Relay.TTL)
+	router := relay.NewRouter(inbox, notifier, cfg.Relay.TTL, cfg.Relay.MaxEnvelopeBytes)
 	reaper := store.NewReaper(inbox, cfg.Relay.ReapInterval)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

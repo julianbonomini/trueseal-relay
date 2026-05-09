@@ -27,7 +27,7 @@ func newE2ERouter(t *testing.T) (*relay.Router, noise.DHKey) {
 		t.Fatalf("relay key: %v", err)
 	}
 
-	router := relay.NewRouter(store, inprocess.New(), relay.DefaultTTL)
+	router := relay.NewRouter(store, inprocess.New(), relay.DefaultTTL, 0)
 	return router, relayKey
 }
 
