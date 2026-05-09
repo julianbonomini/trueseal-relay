@@ -9,6 +9,7 @@
 # Config (may contain secrets)
 *.toml
 !example.toml
+keypair.hex
 
 # SQLite
 *.db
