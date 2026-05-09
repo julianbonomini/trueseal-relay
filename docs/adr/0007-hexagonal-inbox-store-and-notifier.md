@@ -18,11 +18,12 @@ Cross-node delivery notification. When a blob arrives at Node B for a recipient 
 
 ```go
 type Notifier interface {
-    Notify(ctx context.Context, recipientKey []byte) error
+    Notify(recipientKey []byte) error
     Subscribe(ctx context.Context, recipientKey []byte) (<-chan struct{}, error)
-    Unsubscribe(ctx context.Context, recipientKey []byte) error
 }
 ```
+
+Subscriptions are ctx-driven: when the caller cancels the context (e.g. on TCP drop, clean session close, or relay shutdown), the Subscribe implementation closes the returned channel and releases all associated resources. There is no explicit Unsubscribe call — callers use `defer cancel()` in the session handler.
 
 **Adapters shipped:**
 

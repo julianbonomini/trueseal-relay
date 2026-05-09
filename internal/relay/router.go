@@ -59,6 +59,12 @@ func (r *Router) OnPush(ctx context.Context, body []byte) error {
 // goroutine. Returns a channel the session layer reads to write Deliver frames.
 // Channel is closed when ctx is cancelled (device disconnects).
 func (r *Router) OnReceiveConnect(ctx context.Context, deviceKey RecipientKey) <-chan []byte {
+	// deliverCh buffers up to 256 envelopes between the delivery goroutine and
+	// the session write loop. 256 is a practical upper bound for a single flush
+	// burst — large enough to absorb a full inbox drain without blocking the
+	// goroutine, small enough that backpressure kicks in before memory grows
+	// unbounded. If the session write loop falls behind, flushTo will block on
+	// the channel send (ctx.Done() provides the escape hatch).
 	deliverCh := make(chan []byte, 256)
 
 	subCh, err := r.notifier.Subscribe(ctx, deviceKey[:])

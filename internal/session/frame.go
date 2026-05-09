@@ -9,8 +9,12 @@ const (
 	MsgTypePush      MsgType = 0x01
 	MsgTypeDeliver   MsgType = 0x02
 	MsgTypeHeartbeat MsgType = 0x03
-	// MsgTypeAck body: 8 bytes, u64 BE sequence of confirmed Envelope.
+	// MsgTypeAck body: empty.
 	// Semantic: "persisted to InboxStore" — not "received bytes". See ADR-0008.
+	// The 8-byte u64 sequence proposed in an earlier draft was rejected: the relay
+	// never uses sequence numbers (ordering is recipient-side); dedup is impossible
+	// without sender identity on NK sessions; NK already authenticates the relay so
+	// a well-formed Ack is sufficient proof of persistence.
 	MsgTypeAck MsgType = 0x04
 )
 

@@ -19,7 +19,7 @@ Owned by hush-sync as the protocol authority (ADR-0005). hush-relay implements a
 | `0x01` | Push | client → relay | encoded Envelope bytes |
 | `0x02` | Deliver | relay → client | encoded Envelope bytes |
 | `0x03` | Heartbeat | bidirectional | empty |
-| `0x04` | Ack | relay → client | 8 bytes: u64 BE sequence of confirmed Envelope |
+| `0x04` | Ack | relay → client | empty |
 
 ## Ack semantics
 
@@ -30,9 +30,11 @@ The distinction matters for crash safety. A relay that crashes between receiving
 Sequence for Push Sessions:
 1. Client opens Noise NK Push Session
 2. Client sends one or more `Push` frames
-3. For each Push: relay writes to InboxStore, then sends `Ack` with the Envelope's sequence number
+3. For each Push: relay writes to InboxStore, then sends `Ack` (empty body)
 4. Client reads Acks — session stays open until all Acks received
 5. Client closes session
+
+**Why the Ack body is empty (rejected: 8-byte u64 BE sequence):** An earlier design carried the confirmed envelope's sequence number in the Ack body so the sender could match Acks to Pushes. This was rejected for three reasons: (1) the relay never uses sequence numbers — ordering is the recipient's responsibility; (2) dedup by sequence is impossible on NK sessions because the relay never learns the sender's identity; (3) the Noise NK channel already authenticates the relay, so a well-formed Ack is proof enough that the relay persisted the blob. The sequence number added no safety, only complexity.
 
 A Push Session that closes before all Acks are received is treated as unconfirmed. hush-sync replays unconfirmed blobs on the next Push Session.
 
