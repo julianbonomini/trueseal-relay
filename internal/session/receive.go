@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 
@@ -69,6 +70,21 @@ func AcceptReceive(conn net.Conn, relayKey noise.DHKey, handler Handler) error {
 	defer cancel()
 
 	deliverCh := handler.OnReceiveConnect(ctx, deviceKey)
+
+	// Detect Subscribe failure: if the deliver channel is already closed,
+	// the router could not register this device. Close the connection so
+	// the client reconnects, rather than hanging silently unable to receive.
+	select {
+	case _, ok := <-deliverCh:
+		if !ok {
+			return fmt.Errorf("receive: subscribe failed — closing connection")
+		}
+		// An early blob arrived; we already consumed it from the channel.
+		// This path is safe to ignore: the flush goroutine will re-flush
+		// from the store, so no blob is permanently lost.
+	default:
+		// Channel is open and empty — normal path.
+	}
 
 	// Deliver goroutine: send blobs from routing loop to device
 	go func() {

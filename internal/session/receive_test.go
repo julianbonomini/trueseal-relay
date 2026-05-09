@@ -119,9 +119,57 @@ func TestAcceptReceive_EchoesHeartbeat(t *testing.T) {
 	client.Close()
 }
 
-// ── helpers ───────────────────────────────────────────────────────────────────
+// AcceptReceive: if OnReceiveConnect returns a pre-closed channel (Subscribe failure),
+// AcceptReceive must close the connection rather than silently continue unable to deliver.
+func TestAcceptReceive_SubscribeFailureClosesConnection(t *testing.T) {
+	relayKey, _ := noise.DH25519.GenerateKeypair(nil)
+	deviceKey, _ := noise.DH25519.GenerateKeypair(nil)
 
-// doXXHandshake performs a Noise XX handshake as the initiator (device side).
+	client, server := net.Pipe()
+
+	// failHandler returns a pre-closed channel, simulating Subscribe failure.
+	failHandler := &subscribeFailHandler{}
+
+	acceptDone := make(chan error, 1)
+	go func() {
+		acceptDone <- session.AcceptReceive(server, relayKey, failHandler)
+	}()
+
+	// Complete the XX handshake as the device
+	_, _ = doXXHandshake(t, client, relayKey.Public, deviceKey)
+
+	// AcceptReceive should detect the closed channel and return an error,
+	// which closes the server-side conn. The client should see EOF.
+	client.SetDeadline(time.Now().Add(2 * time.Second))
+	var readErr error
+	buf := make([]byte, 1)
+	_, readErr = client.Read(buf)
+	if readErr == nil {
+		t.Error("want connection closed by relay on subscribe failure, got successful read")
+	}
+
+	// AcceptReceive should return (an error, not hang)
+	select {
+	case err := <-acceptDone:
+		if err == nil {
+			t.Error("want non-nil error from AcceptReceive on subscribe failure")
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("AcceptReceive did not return after subscribe failure")
+	}
+}
+
+// subscribeFailHandler returns a pre-closed deliver channel to simulate Subscribe failure.
+type subscribeFailHandler struct{}
+
+func (h *subscribeFailHandler) OnPush(_ context.Context, _ []byte) error { return nil }
+func (h *subscribeFailHandler) OnReceiveConnect(_ context.Context, _ relay.RecipientKey) <-chan []byte {
+	ch := make(chan []byte)
+	close(ch)
+	return ch
+}
+
+// ── helpers ───────────────────────────────────────────────────────────────────
 // Returns (cs_initiator_send, cs_initiator_receive).
 func doXXHandshake(t *testing.T, conn net.Conn, relayPub []byte, deviceKey noise.DHKey) (*noise.CipherState, *noise.CipherState) {
 	t.Helper()

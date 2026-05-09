@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"time"
 
@@ -37,16 +38,18 @@ type StoreConfig struct {
 }
 
 // Load reads the TOML config at path, applies env var overrides, and
-// validates required fields. If path does not exist, falls back to
+// validates required fields. If path is empty or does not exist, falls back to
 // defaults + env vars only — useful for Docker deployments.
 func Load(path string) (*Config, error) {
 	cfg := &Config{}
 
-	if _, err := toml.DecodeFile(path, cfg); err != nil {
-		if !os.IsNotExist(err) {
-			return nil, fmt.Errorf("config: parse %s: %w", path, err)
+	if path != "" {
+		if _, err := toml.DecodeFile(path, cfg); err != nil {
+			if !os.IsNotExist(err) {
+				return nil, fmt.Errorf("config: parse %s: %w", path, err)
+			}
+			// file missing — continue with defaults + env vars
 		}
-		// file missing — continue with defaults + env vars
 	}
 
 	applyEnvOverrides(cfg)
@@ -91,6 +94,20 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("HUSH_RELAY_STORE_SQLITE_PATH"); v != "" {
 		cfg.Store.SQLitePath = v
+	}
+	if v := os.Getenv("HUSH_RELAY_TTL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Relay.TTL = d
+		} else {
+			log.Printf("config: ignoring invalid HUSH_RELAY_TTL %q: %v", v, err)
+		}
+	}
+	if v := os.Getenv("HUSH_RELAY_REAP_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Relay.ReapInterval = d
+		} else {
+			log.Printf("config: ignoring invalid HUSH_RELAY_REAP_INTERVAL %q: %v", v, err)
+		}
 	}
 }
 

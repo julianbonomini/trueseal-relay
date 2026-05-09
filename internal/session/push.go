@@ -45,7 +45,8 @@ func AcceptPush(conn net.Conn, relayKey noise.DHKey, handler Handler) error {
 		return formatErr("push: send resp", err)
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	for {
 		raw, err := readNoiseMsg(conn)

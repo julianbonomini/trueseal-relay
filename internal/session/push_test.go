@@ -127,6 +127,113 @@ func TestAcceptPush_ReceivesEnvelopeAndAcks(t *testing.T) {
 	_ = cs2
 }
 
+// AcceptPush: ctx passed to OnPush is connection-scoped and cancelled when AcceptPush returns.
+func TestAcceptPush_CtxCancelledOnConnClose(t *testing.T) {
+	relayKey, err := noise.DH25519.GenerateKeypair(nil)
+	if err != nil {
+		t.Fatalf("generate relay key: %v", err)
+	}
+
+	client, server := net.Pipe()
+
+	ctxCh := make(chan context.Context, 1)
+	// recordCtxHandler captures the ctx from the first OnPush call.
+	recordCtxHandler := &recordOnPushCtxHandler{ctxCh: ctxCh}
+
+	acceptDone := make(chan struct{})
+	go func() {
+		defer close(acceptDone)
+		if err := session.AcceptPush(server, relayKey, recordCtxHandler); err != nil {
+			t.Logf("AcceptPush: %v", err)
+		}
+	}()
+
+	// Perform NK handshake
+	cfg := noise.Config{
+		CipherSuite: noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashBLAKE2s),
+		Pattern:     noise.HandshakeNK,
+		Initiator:   true,
+		PeerStatic:  relayKey.Public,
+	}
+	hs, err := noise.NewHandshakeState(cfg)
+	if err != nil {
+		t.Fatalf("NK handshake state: %v", err)
+	}
+	msg, _, _, err := hs.WriteMessage(nil, nil)
+	if err != nil {
+		t.Fatalf("NK write e: %v", err)
+	}
+	if _, err := client.Write(encodeHandshakeMsg(msg)); err != nil {
+		t.Fatalf("write e: %v", err)
+	}
+	resp := readHandshakeMsg(t, client)
+	_, cs1, _, err := hs.ReadMessage(nil, resp)
+	if err != nil {
+		t.Fatalf("NK read: %v", err)
+	}
+
+	// Send a Push frame
+	env := make([]byte, 33) // 32-byte recipient key + 1 byte payload
+	push := session.Frame(session.MsgTypePush, env)
+	encrypted, err := cs1.Encrypt(nil, nil, push)
+	if err != nil {
+		t.Fatalf("encrypt push: %v", err)
+	}
+	if _, err := client.Write(encodeMsg(encrypted)); err != nil {
+		t.Fatalf("write push: %v", err)
+	}
+
+	// Wait for handler to capture the ctx
+	var pushedCtx context.Context
+	select {
+	case pushedCtx = <-ctxCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler never received ctx")
+	}
+
+	// Verify ctx has a Done channel (i.e. it is cancellable, not context.Background())
+	if pushedCtx.Done() == nil {
+		t.Error("want cancellable ctx (Done != nil), got context.Background() or equivalent")
+	}
+
+	// Close connection — AcceptPush should return and cancel the ctx via defer.
+	client.Close()
+
+	// Wait for AcceptPush to fully return
+	select {
+	case <-acceptDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("AcceptPush did not return after connection closed")
+	}
+
+	// After AcceptPush returns, the connection-scoped ctx must be Done.
+	select {
+	case <-pushedCtx.Done():
+		// good — ctx was cancelled when AcceptPush returned
+	case <-time.After(100 * time.Millisecond):
+		t.Error("want ctx cancelled after AcceptPush returns, timed out")
+	}
+}
+
+// recordOnPushCtxHandler records the first ctx passed to OnPush.
+type recordOnPushCtxHandler struct {
+	ctxCh chan context.Context
+}
+
+func (h *recordOnPushCtxHandler) OnPush(ctx context.Context, _ []byte) error {
+	select {
+	case h.ctxCh <- ctx:
+	default:
+	}
+	return nil
+}
+
+func (h *recordOnPushCtxHandler) OnReceiveConnect(_ context.Context, _ relay.RecipientKey) <-chan []byte {
+	ch := make(chan []byte)
+	close(ch)
+	return ch
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 func encodeHandshakeMsg(msg []byte) []byte {

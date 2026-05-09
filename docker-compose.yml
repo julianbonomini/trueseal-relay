@@ -16,12 +16,11 @@ services:
       # HUSH_RELAY_LISTEN_RECEIVE: ":7700"
       # HUSH_RELAY_LISTEN_PUSH: ":7701"
       # HUSH_RELAY_STORE_TYPE: sqlite
-    # No config file needed — env vars configure everything.
-    # To use a config file instead:
-    #   volumes:
-    #     - ./relay.toml:/etc/hush-relay/relay.toml:ro
-    #   command: ["-config", "/etc/hush-relay/relay.toml"]
-    command: ["-config", "/nonexistent"]   # triggers env-var-only mode
+      # HUSH_RELAY_TTL: "720h"
+      # HUSH_RELAY_REAP_INTERVAL: "1h"
+    # -no-config: skip TOML file loading; all settings come from env vars above.
+    # To use a config file instead, mount it and pass -config /path/to/relay.toml.
+    command: ["-no-config"]
 
 volumes:
   relay-data:

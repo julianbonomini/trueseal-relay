@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/julianbonomini/hush-relay/internal/config"
 )
@@ -126,7 +127,45 @@ sqlite_path = "/tmp/inbox.db"
 	}
 }
 
-// Env var overrides TOML value.
+// Env vars HUSH_RELAY_TTL and HUSH_RELAY_REAP_INTERVAL override duration fields.
+func TestConfig_TTLAndReapIntervalEnvOverrides(t *testing.T) {
+	t.Setenv("HUSH_RELAY_KEYPAIR_PATH", "/data/keypair.hex")
+	t.Setenv("HUSH_RELAY_STORE_SQLITE_PATH", "/data/inbox.db")
+	t.Setenv("HUSH_RELAY_TTL", "48h")
+	t.Setenv("HUSH_RELAY_REAP_INTERVAL", "30m")
+
+	cfg, err := config.Load("/nonexistent/relay.toml")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Relay.TTL != 48*time.Hour {
+		t.Errorf("TTL: want 48h, got %v", cfg.Relay.TTL)
+	}
+	if cfg.Relay.ReapInterval != 30*time.Minute {
+		t.Errorf("ReapInterval: want 30m, got %v", cfg.Relay.ReapInterval)
+	}
+}
+
+// Invalid duration strings for HUSH_RELAY_TTL and HUSH_RELAY_REAP_INTERVAL are ignored.
+func TestConfig_InvalidDurationEnvIgnored(t *testing.T) {
+	t.Setenv("HUSH_RELAY_KEYPAIR_PATH", "/data/keypair.hex")
+	t.Setenv("HUSH_RELAY_STORE_SQLITE_PATH", "/data/inbox.db")
+	t.Setenv("HUSH_RELAY_TTL", "not-a-duration")
+	t.Setenv("HUSH_RELAY_REAP_INTERVAL", "also-bad")
+
+	cfg, err := config.Load("/nonexistent/relay.toml")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	// Should fall through to defaults
+	if cfg.Relay.TTL != config.DefaultTTL {
+		t.Errorf("TTL: want default %v, got %v", config.DefaultTTL, cfg.Relay.TTL)
+	}
+	if cfg.Relay.ReapInterval != config.DefaultReapInterval {
+		t.Errorf("ReapInterval: want default %v, got %v", config.DefaultReapInterval, cfg.Relay.ReapInterval)
+	}
+}
+
 func TestConfig_EnvOverride(t *testing.T) {
 	p := writeFile(t, validTOML)
 	t.Setenv("HUSH_RELAY_STORE_SQLITE_PATH", "/tmp/override.db")
