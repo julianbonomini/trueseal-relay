@@ -15,12 +15,12 @@ import "context"
 type Notifier interface {
 	// Notify signals that a new envelope has arrived for recipientKey.
 	// Called by the push path after a successful InboxStore.Put.
-	Notify(ctx context.Context, recipientKey []byte) error
+	Notify(recipientKey []byte) error
 
 	// Subscribe returns a channel that receives a signal (struct{}) each
 	// time a new envelope arrives for recipientKey.
 	// The channel is closed when ctx is cancelled — callers must cancel
 	// the context when the Receive Session ends (TCP drop, clean close,
 	// or relay shutdown). Use defer cancel() in the session handler.
-	Subscribe(ctx context.Context, recipientKey []byte) <-chan struct{}
+	Subscribe(ctx context.Context, recipientKey []byte) (<-chan struct{}, error)
 }
