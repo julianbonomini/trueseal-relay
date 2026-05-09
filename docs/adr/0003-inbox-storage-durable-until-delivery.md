@@ -2,7 +2,7 @@
 
 The relay must persist accepted blobs durably — across crashes, restarts, and node replacements — until they are delivered or reaped by TTL. An accepted blob that is lost before delivery is a data loss event. This is non-negotiable.
 
-On delivery, a blob is deleted immediately from the Inbox. Storage exists only for offline recipients — blobs are held until the recipient reconnects and their Inbox is flushed. The relay is a delivery buffer, not a durable log.
+A blob is deleted from the Inbox only after the recipient Device sends a DeliverAck (frame `0x06`) confirming receipt. Until that Ack arrives, the blob remains in the store. If the Receive Session closes before the Ack is received, the blob is re-delivered on the next session — deduplication is the client's responsibility. Storage exists only for undelivered blobs — the relay is a delivery buffer, not a durable log.
 
 Undelivered blobs are subject to a TTL (exact value operator-configured, suggested 30 days). Blobs exceeding the TTL without delivery are reaped. Reaping is policy, not data loss — it handles abandoned and permanently offline devices without unbounded storage growth.
 

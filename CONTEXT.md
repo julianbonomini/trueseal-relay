@@ -23,7 +23,7 @@ The set of undelivered Envelopes addressed to a given Device public key, held du
 _Avoid_: queue, mailbox, buffer, store
 
 **Delivery**:
-The act of the relay forwarding an Envelope from an Inbox to a Device's active Session. Triggers immediate deletion of the Envelope from the Inbox. If no Session is active for the recipient, delivery is deferred until the Device reconnects.
+The act of the relay forwarding an Envelope from an Inbox to a Device's active Receive Session, confirmed by a DeliverAck from the Device. The Envelope is deleted from the Inbox only after the DeliverAck is received. If no Session is active, or if a Session closes before the Ack arrives, the Envelope remains in the Inbox and is re-delivered on the next Receive Session.
 _Avoid_: push, send, forward, flush
 
 **TTL (Time-to-Live)**:

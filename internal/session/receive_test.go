@@ -16,25 +16,29 @@ import (
 // allowing tests to synchronise without time.Sleep.
 type receiveHandler struct {
 	connectedCh chan relay.RecipientKey
-	deliverCh   chan []byte
+	deliverCh   chan relay.DeliveryBlob
 }
 
 func newReceiveHandler() *receiveHandler {
 	return &receiveHandler{
 		connectedCh: make(chan relay.RecipientKey, 1),
-		deliverCh:   make(chan []byte, 8),
+		deliverCh:   make(chan relay.DeliveryBlob, 8),
 	}
 }
 
 func (h *receiveHandler) OnPush(_ context.Context, _ []byte) error { return nil }
 
-func (h *receiveHandler) OnReceiveConnect(_ context.Context, key relay.RecipientKey) <-chan []byte {
+func (h *receiveHandler) OnReceiveConnect(_ context.Context, key relay.RecipientKey) <-chan relay.DeliveryBlob {
 	// Signal the key before returning so tests can synchronise via connectedCh.
 	select {
 	case h.connectedCh <- key:
 	default:
 	}
 	return h.deliverCh
+}
+
+func (h *receiveHandler) OnDeliverAck(_ context.Context, _ relay.RecipientKey, _ int64) error {
+	return nil
 }
 
 // AcceptReceive: relay completes XX handshake and extracts device public key.
@@ -84,7 +88,7 @@ func TestAcceptReceive_DeliversBlobs(t *testing.T) {
 	}
 
 	// Push a blob via the deliver channel
-	h.deliverCh <- []byte("blob-for-device")
+	h.deliverCh <- relay.DeliveryBlob{BlobID: 42, Envelope: []byte("blob-for-device")}
 
 	// Expect a Deliver frame
 	client.SetDeadline(time.Now().Add(2 * time.Second))
@@ -97,8 +101,12 @@ func TestAcceptReceive_DeliversBlobs(t *testing.T) {
 	if !ok || typ != session.MsgTypeDeliver {
 		t.Errorf("want Deliver, got type=%02x ok=%v", typ, ok)
 	}
-	if string(body) != "blob-for-device" {
-		t.Errorf("want 'blob-for-device', got %q", body)
+	_, envelope, ok := session.DecodeDeliverBody(body)
+	if !ok {
+		t.Fatal("DecodeDeliverBody returned ok=false")
+	}
+	if string(envelope) != "blob-for-device" {
+		t.Errorf("want 'blob-for-device', got %q", envelope)
 	}
 
 	client.Close()
@@ -186,10 +194,13 @@ func TestAcceptReceive_SubscribeFailureClosesConnection(t *testing.T) {
 type subscribeFailHandler struct{}
 
 func (h *subscribeFailHandler) OnPush(_ context.Context, _ []byte) error { return nil }
-func (h *subscribeFailHandler) OnReceiveConnect(_ context.Context, _ relay.RecipientKey) <-chan []byte {
-	ch := make(chan []byte)
+func (h *subscribeFailHandler) OnReceiveConnect(_ context.Context, _ relay.RecipientKey) <-chan relay.DeliveryBlob {
+	ch := make(chan relay.DeliveryBlob)
 	close(ch)
 	return ch
+}
+func (h *subscribeFailHandler) OnDeliverAck(_ context.Context, _ relay.RecipientKey, _ int64) error {
+	return nil
 }
 
 // ── T4: Security tests ────────────────────────────────────────────────────────

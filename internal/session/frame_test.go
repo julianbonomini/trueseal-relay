@@ -6,6 +6,54 @@ import (
 	"github.com/julianbonomini/hush-relay/internal/session"
 )
 
+// DeliverAck round-trips through Frame/Parse.
+func TestFrame_DeliverAck(t *testing.T) {
+	blobID := uint64(0xDEADBEEFCAFEBABE)
+	body := session.EncodeDeliverAckBody(blobID)
+	raw := session.Frame(session.MsgTypeDeliverAck, body)
+
+	got, gotBody, ok := session.Parse(raw)
+	if !ok {
+		t.Fatal("Parse returned ok=false for DeliverAck")
+	}
+	if got != session.MsgTypeDeliverAck {
+		t.Errorf("want MsgTypeDeliverAck, got %v", got)
+	}
+	gotID, ok := session.DecodeDeliverAckBody(gotBody)
+	if !ok {
+		t.Fatal("DecodeDeliverAckBody returned ok=false")
+	}
+	if gotID != blobID {
+		t.Errorf("want blobID %d, got %d", blobID, gotID)
+	}
+}
+
+// Deliver body encodes blob_id prefix correctly.
+func TestDeliver_BodyEncoding(t *testing.T) {
+	blobID := uint64(42)
+	envelope := []byte("proto-envelope-bytes")
+
+	body := session.EncodeDeliverBody(blobID, envelope)
+	gotID, gotEnv, ok := session.DecodeDeliverBody(body)
+	if !ok {
+		t.Fatal("DecodeDeliverBody returned ok=false")
+	}
+	if gotID != blobID {
+		t.Errorf("blobID: want %d, got %d", blobID, gotID)
+	}
+	if string(gotEnv) != string(envelope) {
+		t.Errorf("envelope: want %q, got %q", envelope, gotEnv)
+	}
+}
+
+// DecodeDeliverBody rejects body shorter than 8 bytes.
+func TestDecodeDeliverBody_TooShort(t *testing.T) {
+	_, _, ok := session.DecodeDeliverBody([]byte{0x01, 0x02})
+	if ok {
+		t.Error("want ok=false for short body, got true")
+	}
+}
+
 // All four MsgTypes round-trip cleanly.
 func TestFrame_AllTypes(t *testing.T) {
 	for _, tt := range []session.MsgType{

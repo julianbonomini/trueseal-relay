@@ -19,13 +19,11 @@ import (
 //             Put to store → Notify → Ack.
 //             Ack is sent only after Put succeeds (ADR-0008).
 //
-// Deliver path: on Receive Session open, Flush existing blobs, then range
-//               Notifier signals → Flush → deliver. Always goes through the
-//               store — delivery is decoupled from the Ack.
-//
-// Known limitation: if TCP drops after Flush but before the Deliver frame
-// is written, those blobs are lost. Fixing this properly requires a
-// Peek+delete-on-ack InboxStore operation (future work).
+// Deliver path: on Receive Session open, Peek existing blobs (without deleting),
+//               then range Notifier signals → Peek → deliver. Blobs are deleted only
+//               after the Device sends a DeliverAck frame. If the session closes before
+//               the Ack arrives, the blob remains in the store and is re-delivered on
+//               the next Receive Session. See ADR-0009.
 type Router struct {
 	store            store.InboxStore
 	notifier         notify.Notifier
@@ -62,6 +60,12 @@ func (r *Router) OnPush(ctx context.Context, body []byte) error {
 	return nil
 }
 
+// OnDeliverAck implements session.Handler.
+// Deletes the blob identified by blobID from the InboxStore. See ADR-0009.
+func (r *Router) OnDeliverAck(ctx context.Context, _ RecipientKey, blobID int64) error {
+	return r.store.DeleteByIDs(ctx, []int64{blobID})
+}
+
 // OnReceiveConnect implements session.Handler.
 // Registers the device, flushes any pending blobs, and starts a delivery
 // goroutine. Returns a channel the session layer reads to write Deliver frames.
@@ -75,14 +79,14 @@ func (r *Router) OnPush(ctx context.Context, body []byte) error {
 // a single serialisable transaction) to prevent double-delivery: only one
 // session wins the race; the other gets an empty result. This behaviour is
 // tested in TestRouter_TwoConcurrentReceiveSessions_NoDoubleDelivery.
-func (r *Router) OnReceiveConnect(ctx context.Context, deviceKey RecipientKey) <-chan []byte {
-	// deliverCh buffers up to 256 envelopes between the delivery goroutine and
-	// the session write loop. 256 is a practical upper bound for a single flush
+func (r *Router) OnReceiveConnect(ctx context.Context, deviceKey RecipientKey) <-chan DeliveryBlob {
+	// deliverCh buffers up to 256 blobs between the delivery goroutine and
+	// the session write loop. 256 is a practical upper bound for a single peek
 	// burst — large enough to absorb a full inbox drain without blocking the
 	// goroutine, small enough that backpressure kicks in before memory grows
-	// unbounded. If the session write loop falls behind, flushTo will block on
+	// unbounded. If the session write loop falls behind, peekTo will block on
 	// the channel send (ctx.Done() provides the escape hatch).
-	deliverCh := make(chan []byte, 256)
+	deliverCh := make(chan DeliveryBlob, 256)
 
 	subCh, err := r.notifier.Subscribe(ctx, deviceKey[:])
 	if err != nil {
@@ -93,8 +97,8 @@ func (r *Router) OnReceiveConnect(ctx context.Context, deviceKey RecipientKey) <
 	go func() {
 		defer close(deliverCh)
 
-		// Flush any blobs that arrived before this session opened.
-		r.flushTo(ctx, deviceKey, deliverCh)
+		// Peek any blobs that arrived before this session opened.
+		r.peekTo(ctx, deviceKey, deliverCh)
 
 		for {
 			select {
@@ -104,7 +108,7 @@ func (r *Router) OnReceiveConnect(ctx context.Context, deviceKey RecipientKey) <
 				if !ok {
 					return
 				}
-				r.flushTo(ctx, deviceKey, deliverCh)
+				r.peekTo(ctx, deviceKey, deliverCh)
 			}
 		}
 	}()
@@ -112,16 +116,16 @@ func (r *Router) OnReceiveConnect(ctx context.Context, deviceKey RecipientKey) <
 	return deliverCh
 }
 
-// flushTo drains the inbox for deviceKey and sends each envelope to ch.
-// Stops early if ctx is cancelled.
-func (r *Router) flushTo(ctx context.Context, key RecipientKey, ch chan<- []byte) {
-	envelopes, err := r.store.Flush(ctx, key[:])
+// peekTo reads the inbox for deviceKey without deleting and sends each blob to ch.
+// Blobs remain in the store until the device sends a DeliverAck. See ADR-0009.
+func (r *Router) peekTo(ctx context.Context, key RecipientKey, ch chan<- DeliveryBlob) {
+	blobs, err := r.store.Peek(ctx, key[:])
 	if err != nil {
 		return
 	}
-	for _, env := range envelopes {
+	for _, b := range blobs {
 		select {
-		case ch <- env:
+		case ch <- DeliveryBlob{BlobID: b.ID, Envelope: b.Envelope}:
 		case <-ctx.Done():
 			return
 		}

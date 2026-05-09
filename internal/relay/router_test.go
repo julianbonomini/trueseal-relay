@@ -59,15 +59,14 @@ func TestRouter_PushStores(t *testing.T) {
 		t.Fatalf("OnPush: %v", err)
 	}
 
-	// Verify via a receive connect — flush delivers the envelope.
 	devCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	ch := r.OnReceiveConnect(devCtx, recipientA)
 
 	select {
 	case got := <-ch:
-		if string(got) != string(env) {
-			t.Errorf("want %q, got %q", env, got)
+		if string(got.Envelope) != string(env) {
+			t.Errorf("want %q, got %q", env, got.Envelope)
 		}
 	case <-time.After(time.Second):
 		t.Error("want envelope delivered, timed out")
@@ -75,7 +74,7 @@ func TestRouter_PushStores(t *testing.T) {
 }
 
 // Device connects with blobs already in store → all delivered immediately.
-func TestRouter_ConnectFlushesExisting(t *testing.T) {
+func TestRouter_ConnectPeeksExisting(t *testing.T) {
 	r := newRouter(t)
 	ctx := context.Background()
 
@@ -89,7 +88,7 @@ func TestRouter_ConnectFlushesExisting(t *testing.T) {
 
 	got := collectN(t, ch, 3, time.Second)
 	if len(got) != 3 {
-		t.Fatalf("want 3 envelopes, got %d", len(got))
+		t.Fatalf("want 3 blobs, got %d", len(got))
 	}
 }
 
@@ -102,16 +101,12 @@ func TestRouter_OnlineDelivery(t *testing.T) {
 	defer cancel()
 	ch := r.OnReceiveConnect(devCtx, recipientA)
 
-	// OnReceiveConnect registers the subscription synchronously before returning,
-	// so no sleep is needed here — the notifier will buffer the signal if the
-	// delivery goroutine hasn't started yet.
-
 	r.OnPush(ctx, pushBody(make32(0xAA), []byte("live-blob"))) //nolint:errcheck
 
 	select {
 	case got := <-ch:
-		if string(got) != "live-blob" {
-			t.Errorf("want 'live-blob', got %q", got)
+		if string(got.Envelope) != "live-blob" {
+			t.Errorf("want 'live-blob', got %q", got.Envelope)
 		}
 	case <-time.After(time.Second):
 		t.Error("want delivery within 1s, timed out")
@@ -131,8 +126,8 @@ func TestRouter_OfflineThenConnect(t *testing.T) {
 
 	select {
 	case got := <-ch:
-		if string(got) != "offline-blob" {
-			t.Errorf("want 'offline-blob', got %q", got)
+		if string(got.Envelope) != "offline-blob" {
+			t.Errorf("want 'offline-blob', got %q", got.Envelope)
 		}
 	case <-time.After(time.Second):
 		t.Error("want delivery on connect, timed out")
@@ -158,16 +153,16 @@ func TestRouter_DisconnectClosesChannel(t *testing.T) {
 	}
 }
 
-// ── T6: Concurrent sessions + reconnect ────────────────────────────────────
+// ── T6: Concurrent sessions + ack-gated deletion ───────────────────────────
 
-// Two concurrent Receive Sessions for the same device key must not
-// double-deliver a blob. Flush is atomic (serialisable SQLite transaction),
-// so only one session wins the Flush; the other sees an empty result.
-func TestRouter_TwoConcurrentReceiveSessions_NoDoubleDelivery(t *testing.T) {
+// Two concurrent Receive Sessions for the same device key may both deliver
+// the blob — Peek does not delete, so both sessions see it. Deduplication is
+// the client's responsibility (ADR-0009). Once either session acks the blob,
+// subsequent Peeks return nothing.
+func TestRouter_TwoConcurrentReceiveSessions_PeekBothSeeBlob(t *testing.T) {
 	r := newRouter(t)
 	ctx := context.Background()
 
-	// Store a blob before any session opens
 	if err := r.OnPush(ctx, pushBody(make32(0xAA), []byte("blob"))); err != nil {
 		t.Fatalf("OnPush: %v", err)
 	}
@@ -180,12 +175,11 @@ func TestRouter_TwoConcurrentReceiveSessions_NoDoubleDelivery(t *testing.T) {
 	ch1 := r.OnReceiveConnect(ctx1, recipientA)
 	ch2 := r.OnReceiveConnect(ctx2, recipientA)
 
-	// Drain both channels concurrently and collect all delivered blobs
 	var mu sync.Mutex
-	var got [][]byte
+	var got []relay.DeliveryBlob
 	var wg sync.WaitGroup
 
-	drain := func(ch <-chan []byte, cancel context.CancelFunc) {
+	drain := func(ch <-chan relay.DeliveryBlob, cancel context.CancelFunc) {
 		defer wg.Done()
 		for {
 			select {
@@ -196,8 +190,8 @@ func TestRouter_TwoConcurrentReceiveSessions_NoDoubleDelivery(t *testing.T) {
 				mu.Lock()
 				got = append(got, blob)
 				mu.Unlock()
+				r.OnDeliverAck(ctx, recipientA, blob.BlobID) //nolint:errcheck
 			case <-time.After(300 * time.Millisecond):
-				// No more blobs within window — close this session
 				cancel()
 				return
 			}
@@ -209,58 +203,94 @@ func TestRouter_TwoConcurrentReceiveSessions_NoDoubleDelivery(t *testing.T) {
 	go drain(ch2, cancel2)
 	wg.Wait()
 
-	if len(got) != 1 {
-		t.Errorf("want exactly 1 delivery across both sessions, got %d: %v", len(got), got)
+	// At least one session delivered the blob; both may have (client deduplicates)
+	if len(got) == 0 {
+		t.Error("want at least 1 delivery, got 0")
 	}
 }
 
-// Device connects, receives a blob, disconnects, then reconnects.
-// The blob must not be delivered again (it was deleted by the first Flush).
-func TestRouter_ReconnectNoDoubleDelivery(t *testing.T) {
+// Device connects, acks received blob, disconnects, then reconnects.
+// The acked blob must not be re-delivered.
+func TestRouter_ReconnectAfterAck_NoRedelivery(t *testing.T) {
 	r := newRouter(t)
 	ctx := context.Background()
 
-	// First session
 	ctx1, cancel1 := context.WithCancel(ctx)
 	ch1 := r.OnReceiveConnect(ctx1, recipientA)
 
-	// Push a blob
 	if err := r.OnPush(ctx, pushBody(make32(0xAA), []byte("blob"))); err != nil {
 		t.Fatalf("OnPush: %v", err)
 	}
 
-	// Receive on first session
+	var blobID int64
 	select {
 	case blob := <-ch1:
-		if string(blob) != "blob" {
-			t.Errorf("want 'blob', got %q", blob)
+		if string(blob.Envelope) != "blob" {
+			t.Errorf("want 'blob', got %q", blob.Envelope)
 		}
+		blobID = blob.BlobID
 	case <-time.After(time.Second):
 		t.Fatal("blob not received on first session")
 	}
 
-	// Disconnect first session
+	// Ack the blob — deletes it from store
+	if err := r.OnDeliverAck(ctx, recipientA, blobID); err != nil {
+		t.Fatalf("OnDeliverAck: %v", err)
+	}
 	cancel1()
 
-	// Reconnect
 	ctx2, cancel2 := context.WithCancel(ctx)
 	defer cancel2()
 	ch2 := r.OnReceiveConnect(ctx2, recipientA)
 
-	// Must not receive the blob again — it was deleted by the first Flush
 	select {
 	case blob := <-ch2:
-		t.Errorf("want no delivery on reconnect, got: %q", blob)
+		t.Errorf("want no delivery on reconnect after ack, got: %q", blob.Envelope)
 	case <-time.After(200 * time.Millisecond):
-		// good — no double delivery
+		// good — no re-delivery after ack
+	}
+}
+
+// Device connects, receives blob, disconnects WITHOUT acking.
+// On reconnect the blob must be re-delivered (ADR-0009).
+func TestRouter_ReconnectWithoutAck_Redelivers(t *testing.T) {
+	r := newRouter(t)
+	ctx := context.Background()
+
+	if err := r.OnPush(ctx, pushBody(make32(0xAA), []byte("blob"))); err != nil {
+		t.Fatalf("OnPush: %v", err)
+	}
+
+	// First session — receive but do NOT ack
+	ctx1, cancel1 := context.WithCancel(ctx)
+	ch1 := r.OnReceiveConnect(ctx1, recipientA)
+	select {
+	case <-ch1:
+		// received but not acked
+	case <-time.After(time.Second):
+		t.Fatal("blob not received on first session")
+	}
+	cancel1() // disconnect without ack
+
+	// Reconnect — blob must be re-delivered
+	ctx2, cancel2 := context.WithCancel(ctx)
+	defer cancel2()
+	ch2 := r.OnReceiveConnect(ctx2, recipientA)
+	select {
+	case got := <-ch2:
+		if string(got.Envelope) != "blob" {
+			t.Errorf("want 'blob' on redelivery, got %q", got.Envelope)
+		}
+	case <-time.After(time.Second):
+		t.Error("want blob re-delivered on reconnect, timed out")
 	}
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-func collectN(t *testing.T, ch <-chan []byte, n int, timeout time.Duration) [][]byte {
+func collectN(t *testing.T, ch <-chan relay.DeliveryBlob, n int, timeout time.Duration) []relay.DeliveryBlob {
 	t.Helper()
-	var out [][]byte
+	var out []relay.DeliveryBlob
 	deadline := time.After(timeout)
 	for len(out) < n {
 		select {
@@ -292,7 +322,7 @@ func newRouterWithLimit(t *testing.T, maxBytes int64) *relay.Router {
 func TestRouter_EnvelopeAtLimitAccepted(t *testing.T) {
 	const limit = 100
 	r := newRouterWithLimit(t, limit)
-	env := make([]byte, limit) // exactly at limit
+	env := make([]byte, limit)
 	if err := r.OnPush(context.Background(), pushBody(make32(0xCC), env)); err != nil {
 		t.Errorf("want nil, got %v", err)
 	}
@@ -302,7 +332,7 @@ func TestRouter_EnvelopeAtLimitAccepted(t *testing.T) {
 func TestRouter_EnvelopeOverLimitRejected(t *testing.T) {
 	const limit = 100
 	r := newRouterWithLimit(t, limit)
-	env := make([]byte, limit+1) // one over
+	env := make([]byte, limit+1)
 	if err := r.OnPush(context.Background(), pushBody(make32(0xCC), env)); err == nil {
 		t.Error("want error for oversized envelope, got nil")
 	}
@@ -313,7 +343,7 @@ func TestRouter_OversizedEnvelopeNotStored(t *testing.T) {
 	const limit = 100
 	r := newRouterWithLimit(t, limit)
 	env := make([]byte, limit+1)
-	_ = r.OnPush(context.Background(), pushBody(make32(0xCC), env)) // expect error
+	_ = r.OnPush(context.Background(), pushBody(make32(0xCC), env))
 
 	devCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -321,7 +351,7 @@ func TestRouter_OversizedEnvelopeNotStored(t *testing.T) {
 
 	select {
 	case blob := <-ch:
-		t.Errorf("want nothing stored, got blob len=%d", len(blob))
+		t.Errorf("want nothing stored, got blob len=%d", len(blob.Envelope))
 	case <-time.After(200 * time.Millisecond):
 		// good
 	}
@@ -329,7 +359,7 @@ func TestRouter_OversizedEnvelopeNotStored(t *testing.T) {
 
 // Zero limit (disabled) — arbitrarily large envelope is accepted.
 func TestRouter_ZeroLimitDisabled(t *testing.T) {
-	r := newRouterWithLimit(t, 0) // 0 = no limit
+	r := newRouterWithLimit(t, 0)
 	env := make([]byte, 10*1024*1024) // 10 MiB
 	if err := r.OnPush(context.Background(), pushBody(make32(0xDD), env)); err != nil {
 		t.Errorf("want nil with limit=0, got %v", err)

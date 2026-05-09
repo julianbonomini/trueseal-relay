@@ -24,10 +24,14 @@ func (m *mockHandler) OnPush(_ context.Context, envelope []byte) error {
 	return m.err
 }
 
-func (m *mockHandler) OnReceiveConnect(_ context.Context, _ relay.RecipientKey) <-chan []byte {
-	ch := make(chan []byte)
+func (m *mockHandler) OnReceiveConnect(_ context.Context, _ relay.RecipientKey) <-chan relay.DeliveryBlob {
+	ch := make(chan relay.DeliveryBlob)
 	close(ch)
 	return ch
+}
+
+func (m *mockHandler) OnDeliverAck(_ context.Context, _ relay.RecipientKey, _ int64) error {
+	return nil
 }
 
 // noiseConfig returns a standard Noise config for tests.
@@ -230,10 +234,14 @@ func (h *recordOnPushCtxHandler) OnPush(ctx context.Context, _ []byte) error {
 	return nil
 }
 
-func (h *recordOnPushCtxHandler) OnReceiveConnect(_ context.Context, _ relay.RecipientKey) <-chan []byte {
-	ch := make(chan []byte)
+func (h *recordOnPushCtxHandler) OnReceiveConnect(_ context.Context, _ relay.RecipientKey) <-chan relay.DeliveryBlob {
+	ch := make(chan relay.DeliveryBlob)
 	close(ch)
 	return ch
+}
+
+func (h *recordOnPushCtxHandler) OnDeliverAck(_ context.Context, _ relay.RecipientKey, _ int64) error {
+	return nil
 }
 
 // ── T4: Security tests ───────────────────────────────────────────────────────

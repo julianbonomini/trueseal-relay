@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/julianbonomini/hush-relay/internal/store"
 	_ "modernc.org/sqlite" // registers the "sqlite" driver
 )
 
@@ -117,6 +119,52 @@ func (s *Store) Flush(ctx context.Context, recipientKey []byte) ([][]byte, error
 	}
 
 	return envelopes, nil
+}
+
+// Peek fetches all envelopes for recipientKey without deleting them.
+// Returns InboxBlob values in insertion order (FIFO).
+func (s *Store) Peek(ctx context.Context, recipientKey []byte) ([]store.InboxBlob, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, envelope FROM inbox WHERE recipient = ? ORDER BY id ASC`,
+		recipientKey,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: peek: %w", err)
+	}
+	defer rows.Close()
+
+	var blobs []store.InboxBlob
+	for rows.Next() {
+		var b store.InboxBlob
+		if err := rows.Scan(&b.ID, &b.Envelope); err != nil {
+			return nil, fmt.Errorf("sqlite: peek scan: %w", err)
+		}
+		blobs = append(blobs, b)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: peek rows: %w", err)
+	}
+	return blobs, nil
+}
+
+// DeleteByIDs deletes blobs by their store-assigned IDs.
+// IDs that no longer exist are silently ignored.
+func (s *Store) DeleteByIDs(ctx context.Context, ids []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	// Build parameterised query: DELETE FROM inbox WHERE id IN (?, ?, ...)
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := `DELETE FROM inbox WHERE id IN (` + strings.Join(placeholders, ",") + `)`
+	if _, err := s.db.ExecContext(ctx, query, args...); err != nil {
+		return fmt.Errorf("sqlite: delete by ids: %w", err)
+	}
+	return nil
 }
 
 // Reap deletes all envelopes whose TTL has elapsed.

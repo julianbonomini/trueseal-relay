@@ -93,7 +93,11 @@ type errorStore struct{}
 func (e *errorStore) Put(_ context.Context, _ []byte, _ []byte, _ time.Duration) error {
 	return nil
 }
-func (e *errorStore) Flush(_ context.Context, _ []byte) ([][]byte, error) { return nil, nil }
+func (e *errorStore) Flush(_ context.Context, _ []byte) ([][]byte, error)  { return nil, nil }
+func (e *errorStore) Peek(_ context.Context, _ []byte) ([]store.InboxBlob, error) {
+	return nil, nil
+}
+func (e *errorStore) DeleteByIDs(_ context.Context, _ []int64) error { return nil }
 func (e *errorStore) Reap(_ context.Context) error {
 	return fmt.Errorf("reap: simulated error")
 }

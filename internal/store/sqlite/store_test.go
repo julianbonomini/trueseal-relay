@@ -199,6 +199,91 @@ func TestFlush_CancelledContext(t *testing.T) {
 	}
 }
 
+// ── Peek ─────────────────────────────────────────────────────────────────────
+
+// Peek returns envelopes without deleting them.
+func TestPeek_ReturnsWithoutDeleting(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	s.Put(ctx, keyA, []byte("one"), time.Hour) //nolint:errcheck
+	s.Put(ctx, keyA, []byte("two"), time.Hour) //nolint:errcheck
+
+	blobs, err := s.Peek(ctx, keyA)
+	if err != nil {
+		t.Fatalf("Peek: %v", err)
+	}
+	if len(blobs) != 2 {
+		t.Fatalf("want 2 blobs, got %d", len(blobs))
+	}
+
+	// blobs still in store after Peek
+	again, err := s.Peek(ctx, keyA)
+	if err != nil {
+		t.Fatalf("second Peek: %v", err)
+	}
+	if len(again) != 2 {
+		t.Errorf("want 2 blobs after second Peek, got %d", len(again))
+	}
+}
+
+// DeleteByIDs deletes specific blobs and leaves others intact.
+func TestDeleteByIDs_DeletesSpecificBlobs(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	s.Put(ctx, keyA, []byte("one"), time.Hour)   //nolint:errcheck
+	s.Put(ctx, keyA, []byte("two"), time.Hour)   //nolint:errcheck
+	s.Put(ctx, keyA, []byte("three"), time.Hour) //nolint:errcheck
+
+	blobs, _ := s.Peek(ctx, keyA)
+	// delete only the first two
+	ids := []int64{blobs[0].ID, blobs[1].ID}
+	if err := s.DeleteByIDs(ctx, ids); err != nil {
+		t.Fatalf("DeleteByIDs: %v", err)
+	}
+
+	remaining, err := s.Peek(ctx, keyA)
+	if err != nil {
+		t.Fatalf("Peek after DeleteByIDs: %v", err)
+	}
+	if len(remaining) != 1 || string(remaining[0].Envelope) != "three" {
+		t.Errorf("want [three], got %v", remaining)
+	}
+}
+
+// DeleteByIDs with non-existent IDs is a no-op.
+func TestDeleteByIDs_NonExistentIDs(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.DeleteByIDs(context.Background(), []int64{9999, 8888}); err != nil {
+		t.Errorf("want no error for non-existent IDs, got %v", err)
+	}
+}
+
+// Peek then DeleteByIDs: acked blobs deleted, un-acked blobs remain.
+func TestPeek_ThenDeleteByIDs_LeavesRemainder(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	s.Put(ctx, keyA, []byte("acked"), time.Hour)   //nolint:errcheck
+	s.Put(ctx, keyA, []byte("unacked"), time.Hour) //nolint:errcheck
+
+	blobs, _ := s.Peek(ctx, keyA)
+	// ack only the first
+	if err := s.DeleteByIDs(ctx, []int64{blobs[0].ID}); err != nil {
+		t.Fatalf("DeleteByIDs: %v", err)
+	}
+
+	// second Peek shows only the un-acked blob
+	remaining, err := s.Peek(ctx, keyA)
+	if err != nil {
+		t.Fatalf("Peek: %v", err)
+	}
+	if len(remaining) != 1 || string(remaining[0].Envelope) != "unacked" {
+		t.Errorf("want [unacked], got %v", remaining)
+	}
+}
+
 // ── Reap ──────────────────────────────────────────────────────────────────────
 
 // Reap deletes expired envelopes and leaves unexpired ones intact.

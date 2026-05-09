@@ -17,10 +17,11 @@ Owned by hush-sync as the protocol authority (ADR-0005). hush-relay implements a
 | Tag | Name | Direction | Body |
 |---|---|---|---|
 | `0x01` | Push | client → relay | `[recipient_pub: 32 bytes][protobuf Envelope bytes]` |
-| `0x02` | Deliver | relay → client | `[protobuf Envelope bytes]` |
+| `0x02` | Deliver | relay → client | `[blob_id: 8 bytes u64 BE][protobuf Envelope bytes]` |
 | `0x03` | Heartbeat | bidirectional | empty |
 | `0x04` | Ack | relay → client | empty |
 | `0x05` | Error | relay → client | empty |
+| `0x06` | DeliverAck | client → relay | `[blob_id: 8 bytes u64 BE]` |
 
 ## Push body layout (wire format contract)
 
@@ -35,13 +36,29 @@ The Push frame body has this exact byte layout:
 - `recipient_pub` — the recipient's X25519 static public key, raw bytes (no encoding). The relay reads `body[0:32]` as the inbox routing key. **Never proto-decoded** — the relay routes by address, not content.
 - `envelope` — a protobuf-encoded `Envelope` message (`hush.sync.v0.Envelope`). Stored verbatim, forwarded verbatim. The relay never deserialises this field.
 
-The Deliver frame body contains only the `envelope` bytes — the 32-byte routing prefix is stripped. The relay stores `body[32:]` and delivers it as `Deliver` body. hush-sync recipients call `Envelope::decode(body)` on the Deliver body.
+The Deliver frame body contains an 8-byte opaque blob_id prefix followed by the envelope bytes: `[blob_id: 8 bytes u64 BE][envelope bytes]`. The relay stores `body[32:]` of the Push frame and delivers it as the envelope portion of the Deliver body. hush-sync recipients strip the first 8 bytes, then call `Envelope::decode(remaining)` on the Deliver body.
 
 **Why raw prefix, not proto-parsed `recipient_pub`?**
 Parsing proto on the relay would introduce a proto decode dependency on every push. The relay is a zero-knowledge router — it must route, not interpret. A raw fixed-width prefix is faster, simpler, and avoids any dependency on the Envelope proto schema. The relay is explicitly not a consumer of the hush-sync Envelope format.
 
 **Enforcement:**
 The relay validates `len(body) >= 32` — if not, the blob is rejected and no Ack is sent. The relay also enforces a configurable maximum envelope size (`relay.max_envelope_bytes`) on `body[32:]` — see below.
+
+## DeliverAck semantics
+
+`DeliverAck (0x06)` is sent by the Device after it has durably received and persisted a `Deliver` frame. The body carries the opaque `blob_id` echoed from the corresponding Deliver frame — the relay uses it to delete the blob from the InboxStore.
+
+The `blob_id` is an opaque u64 assigned by the relay. The client must not interpret it — only echo it back. The relay currently uses the InboxStore's internal row ID, but the wire contract makes no guarantee about its meaning.
+
+Sequence for Receive Sessions:
+1. Device opens Noise XX Receive Session
+2. Relay Peeks inbox — fetches blobs without deleting
+3. For each blob: relay sends `Deliver [blob_id][envelope]`
+4. Device persists envelope, sends `DeliverAck [blob_id]`
+5. Relay receives DeliverAck → deletes blob from InboxStore by blob_id
+6. If session closes before DeliverAck arrives, blob remains in store and is re-delivered on next Receive Session
+
+Deduplication is the client's responsibility — a blob may be delivered more than once across sessions.
 
 ## Ack semantics
 

@@ -17,7 +17,12 @@ type Handler interface {
 
 	// OnReceiveConnect is called when a Receive Session is established.
 	// deviceKey is the device's stable noise public key.
-	// Returns a channel on which the routing loop sends raw envelope bytes
-	// to deliver to this device. The channel is closed when ctx is done.
-	OnReceiveConnect(ctx context.Context, deviceKey relay.RecipientKey) <-chan []byte
+	// Returns a channel on which the routing loop sends DeliveryBlobs to deliver
+	// to this device. The channel is closed when ctx is done.
+	OnReceiveConnect(ctx context.Context, deviceKey relay.RecipientKey) <-chan relay.DeliveryBlob
+
+	// OnDeliverAck is called when the Device sends a DeliverAck frame.
+	// blobID is the opaque identifier echoed from the corresponding Deliver frame.
+	// The implementation deletes the blob from the InboxStore. See ADR-0009.
+	OnDeliverAck(ctx context.Context, deviceKey relay.RecipientKey, blobID int64) error
 }

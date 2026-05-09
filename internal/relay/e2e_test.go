@@ -47,13 +47,17 @@ func (rr *readyRouter) OnPush(ctx context.Context, body []byte) error {
 	return rr.inner.OnPush(ctx, body)
 }
 
-func (rr *readyRouter) OnReceiveConnect(ctx context.Context, key relay.RecipientKey) <-chan []byte {
+func (rr *readyRouter) OnReceiveConnect(ctx context.Context, key relay.RecipientKey) <-chan relay.DeliveryBlob {
 	ch := rr.inner.OnReceiveConnect(ctx, key)
 	select {
 	case rr.readyCh <- struct{}{}:
 	default:
 	}
 	return ch
+}
+
+func (rr *readyRouter) OnDeliverAck(ctx context.Context, key relay.RecipientKey, blobID int64) error {
+	return rr.inner.OnDeliverAck(ctx, key, blobID)
 }
 
 // E2E: device A pushes, device B (online) receives immediately.
@@ -105,8 +109,12 @@ func TestE2E_PushDeliverOnline(t *testing.T) {
 	if !ok || typ != session.MsgTypeDeliver {
 		t.Fatalf("want Deliver, got type=%02x ok=%v", typ, ok)
 	}
-	if string(body) != string(envelope) {
-		t.Errorf("want %q, got %q", envelope, body)
+	_, deliveredEnv, ok := session.DecodeDeliverBody(body)
+	if !ok {
+		t.Fatal("DecodeDeliverBody failed")
+	}
+	if string(deliveredEnv) != string(envelope) {
+		t.Errorf("want %q, got %q", envelope, deliveredEnv)
 	}
 	_ = receiveCtx
 }
@@ -150,8 +158,80 @@ func TestE2E_PushDeliverOffline(t *testing.T) {
 	if !ok || typ != session.MsgTypeDeliver {
 		t.Fatalf("want Deliver, got type=%02x ok=%v", typ, ok)
 	}
-	if string(body) != string(envelope) {
-		t.Errorf("want %q, got %q", envelope, body)
+	_, deliveredEnv, ok := session.DecodeDeliverBody(body)
+	if !ok {
+		t.Fatal("DecodeDeliverBody failed")
+	}
+	if string(deliveredEnv) != string(envelope) {
+		t.Errorf("want %q, got %q", envelope, deliveredEnv)
+	}
+}
+
+// E2E: TCP drops after Deliver frame written but before DeliverAck.
+// Blob must be re-delivered on reconnect (ADR-0009).
+func TestE2E_TCPDropBeforeAck_Redelivers(t *testing.T) {
+	router, relayKey := newE2ERouter(t)
+
+	deviceKey, err := noise.DH25519.GenerateKeypair(nil)
+	if err != nil {
+		t.Fatalf("device key: %v", err)
+	}
+
+	// Push a blob
+	envelope := []byte("drop-me")
+	clientPush, serverPush := net.Pipe()
+	go func() {
+		session.AcceptPush(serverPush, relayKey, router) //nolint:errcheck
+	}()
+	doPushSession(t, clientPush, relayKey.Public, deviceKey.Public, envelope)
+	clientPush.Close()
+
+	// First Receive Session — receive Deliver but drop TCP (no DeliverAck)
+	clientReceive1, serverReceive1 := net.Pipe()
+	go func() {
+		session.AcceptReceive(serverReceive1, relayKey, router) //nolint:errcheck
+	}()
+	cs2First := doXXHandshake(t, clientReceive1, deviceKey)
+
+	clientReceive1.SetDeadline(time.Now().Add(2 * time.Second))
+	raw := readMsg(t, clientReceive1)
+	plain, err := cs2First.Decrypt(nil, nil, raw)
+	if err != nil {
+		t.Fatalf("decrypt deliver (first session): %v", err)
+	}
+	typ, _, ok := session.Parse(plain)
+	if !ok || typ != session.MsgTypeDeliver {
+		t.Fatalf("want Deliver, got type=%02x", typ)
+	}
+
+	// Drop the TCP connection without sending DeliverAck
+	clientReceive1.Close()
+	time.Sleep(50 * time.Millisecond) // allow AcceptReceive to observe the close
+
+	// Second Receive Session — blob must be re-delivered
+	clientReceive2, serverReceive2 := net.Pipe()
+	defer clientReceive2.Close()
+	go func() {
+		session.AcceptReceive(serverReceive2, relayKey, router) //nolint:errcheck
+	}()
+	cs2Second := doXXHandshake(t, clientReceive2, deviceKey)
+
+	clientReceive2.SetDeadline(time.Now().Add(2 * time.Second))
+	raw2 := readMsg(t, clientReceive2)
+	plain2, err := cs2Second.Decrypt(nil, nil, raw2)
+	if err != nil {
+		t.Fatalf("decrypt deliver (second session): %v", err)
+	}
+	typ2, body2, ok := session.Parse(plain2)
+	if !ok || typ2 != session.MsgTypeDeliver {
+		t.Fatalf("want Deliver on reconnect, got type=%02x", typ2)
+	}
+	_, deliveredEnv, ok := session.DecodeDeliverBody(body2)
+	if !ok {
+		t.Fatal("DecodeDeliverBody failed on reconnect")
+	}
+	if string(deliveredEnv) != string(envelope) {
+		t.Errorf("want %q re-delivered, got %q", envelope, deliveredEnv)
 	}
 }
 

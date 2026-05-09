@@ -89,7 +89,8 @@ func AcceptReceive(conn net.Conn, relayKey noise.DHKey, handler Handler) error {
 	// Deliver goroutine: send blobs from routing loop to device
 	go func() {
 		for blob := range deliverCh {
-			frame := Frame(MsgTypeDeliver, blob)
+			body := EncodeDeliverBody(uint64(blob.BlobID), blob.Envelope)
+			frame := Frame(MsgTypeDeliver, body)
 			encrypted, err := cs2.Encrypt(nil, nil, frame)
 			if err != nil {
 				return
@@ -115,7 +116,7 @@ func AcceptReceive(conn net.Conn, relayKey noise.DHKey, handler Handler) error {
 			return formatErr("receive: decrypt", err)
 		}
 
-		typ, _, ok := Parse(plain)
+		typ, body, ok := Parse(plain)
 		if !ok {
 			continue
 		}
@@ -129,6 +130,12 @@ func AcceptReceive(conn net.Conn, relayKey noise.DHKey, handler Handler) error {
 			if err := writeNoiseMsg(conn, hb); err != nil {
 				return formatErr("receive: send heartbeat", err)
 			}
+		case MsgTypeDeliverAck:
+			blobID, ok := DecodeDeliverAckBody(body)
+			if !ok {
+				continue
+			}
+			_ = handler.OnDeliverAck(ctx, deviceKey, int64(blobID))
 		default:
 			// drop silently
 		}
