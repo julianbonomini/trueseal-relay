@@ -37,12 +37,16 @@ type StoreConfig struct {
 }
 
 // Load reads the TOML config at path, applies env var overrides, and
-// validates required fields. Returns a ready Config or a descriptive error.
+// validates required fields. If path does not exist, falls back to
+// defaults + env vars only — useful for Docker deployments.
 func Load(path string) (*Config, error) {
 	cfg := &Config{}
 
 	if _, err := toml.DecodeFile(path, cfg); err != nil {
-		return nil, fmt.Errorf("config: parse %s: %w", path, err)
+		if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("config: parse %s: %w", path, err)
+		}
+		// file missing — continue with defaults + env vars
 	}
 
 	applyEnvOverrides(cfg)

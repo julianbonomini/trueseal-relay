@@ -30,6 +30,20 @@ type        = "sqlite"
 sqlite_path = "/var/lib/hush-relay/inbox.db"
 `
 
+// If config file does not exist, falls back to defaults + env vars only.
+func TestConfig_MissingFileUsesEnvVars(t *testing.T) {
+	t.Setenv("HUSH_RELAY_KEYPAIR_PATH", "/data/keypair.hex")
+	t.Setenv("HUSH_RELAY_STORE_SQLITE_PATH", "/data/inbox.db")
+
+	cfg, err := config.Load("/nonexistent/relay.toml")
+	if err != nil {
+		t.Fatalf("want nil when file missing + env vars set, got: %v", err)
+	}
+	if cfg.Relay.KeypairPath != "/data/keypair.hex" {
+		t.Errorf("KeypairPath: got %q", cfg.Relay.KeypairPath)
+	}
+}
+
 // Valid TOML parses without error and fields are populated.
 func TestConfig_ParsesValidTOML(t *testing.T) {
 	p := writeFile(t, validTOML)

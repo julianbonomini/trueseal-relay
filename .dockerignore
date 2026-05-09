@@ -1,0 +1,18 @@
+# Build artifacts
+hush-relay
+*.exe
+
+# Go test cache
+*.test
+
+# Secrets — never bake keypairs into images
+keypair.hex
+*.hex
+
+# Data volumes
+*.db
+*.db-wal
+*.db-shm
+
+# Editor
+.DS_Store

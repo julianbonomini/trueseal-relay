@@ -1,0 +1,28 @@
+services:
+  relay:
+    build: .
+    image: hush-relay:latest
+    restart: unless-stopped
+    ports:
+      - "7700:7700"   # Receive sessions (Noise XX) — devices
+      - "7701:7701"   # Push sessions (Noise NK) — hush-sync
+    volumes:
+      - relay-data:/data
+    environment:
+      # Required: paths inside the /data volume (auto-created on first run)
+      HUSH_RELAY_KEYPAIR_PATH: /data/keypair.hex
+      HUSH_RELAY_STORE_SQLITE_PATH: /data/inbox.db
+      # Optional overrides (defaults shown)
+      # HUSH_RELAY_LISTEN_RECEIVE: ":7700"
+      # HUSH_RELAY_LISTEN_PUSH: ":7701"
+      # HUSH_RELAY_STORE_TYPE: sqlite
+    # No config file needed — env vars configure everything.
+    # To use a config file instead:
+    #   volumes:
+    #     - ./relay.toml:/etc/hush-relay/relay.toml:ro
+    #   command: ["-config", "/etc/hush-relay/relay.toml"]
+    command: ["-config", "/nonexistent"]   # triggers env-var-only mode
+
+volumes:
+  relay-data:
+    driver: local
