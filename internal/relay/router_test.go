@@ -19,7 +19,7 @@ func newRouter(t *testing.T) *relay.Router {
 		t.Fatalf("store: %v", err)
 	}
 	t.Cleanup(func() { store.Close() })
-	return relay.NewRouter(store, inprocess.New(), relay.DefaultTTL)
+	return relay.NewRouter(store, inprocess.New(), relay.DefaultTTL, 0)
 }
 
 func pushBody(recipient [32]byte, envelope []byte) []byte {
@@ -274,4 +274,64 @@ func collectN(t *testing.T, ch <-chan []byte, n int, timeout time.Duration) [][]
 		}
 	}
 	return out
+}
+
+// ── Envelope size limit (ADR-0008 / issue #16) ────────────────────────────────
+
+func newRouterWithLimit(t *testing.T, maxBytes int64) *relay.Router {
+	t.Helper()
+	store, err := sqlitestore.New(filepath.Join(t.TempDir(), "limit.db"))
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+	return relay.NewRouter(store, inprocess.New(), relay.DefaultTTL, maxBytes)
+}
+
+// Envelope exactly at the limit is accepted.
+func TestRouter_EnvelopeAtLimitAccepted(t *testing.T) {
+	const limit = 100
+	r := newRouterWithLimit(t, limit)
+	env := make([]byte, limit) // exactly at limit
+	if err := r.OnPush(context.Background(), pushBody(make32(0xCC), env)); err != nil {
+		t.Errorf("want nil, got %v", err)
+	}
+}
+
+// Envelope one byte over the limit is rejected — no Ack.
+func TestRouter_EnvelopeOverLimitRejected(t *testing.T) {
+	const limit = 100
+	r := newRouterWithLimit(t, limit)
+	env := make([]byte, limit+1) // one over
+	if err := r.OnPush(context.Background(), pushBody(make32(0xCC), env)); err == nil {
+		t.Error("want error for oversized envelope, got nil")
+	}
+}
+
+// Oversized blob is not persisted — a subsequent Receive Session gets nothing.
+func TestRouter_OversizedEnvelopeNotStored(t *testing.T) {
+	const limit = 100
+	r := newRouterWithLimit(t, limit)
+	env := make([]byte, limit+1)
+	_ = r.OnPush(context.Background(), pushBody(make32(0xCC), env)) // expect error
+
+	devCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := r.OnReceiveConnect(devCtx, relay.RecipientKey(make32(0xCC)))
+
+	select {
+	case blob := <-ch:
+		t.Errorf("want nothing stored, got blob len=%d", len(blob))
+	case <-time.After(200 * time.Millisecond):
+		// good
+	}
+}
+
+// Zero limit (disabled) — arbitrarily large envelope is accepted.
+func TestRouter_ZeroLimitDisabled(t *testing.T) {
+	r := newRouterWithLimit(t, 0) // 0 = no limit
+	env := make([]byte, 10*1024*1024) // 10 MiB
+	if err := r.OnPush(context.Background(), pushBody(make32(0xDD), env)); err != nil {
+		t.Errorf("want nil with limit=0, got %v", err)
+	}
 }
