@@ -1,0 +1,19 @@
+# Binaries
+hush-relay
+
+# Go
+*.test
+*.out
+/vendor/
+
+# Config (may contain secrets)
+*.toml
+!example.toml
+
+# SQLite
+*.db
+*.db-shm
+*.db-wal
+
+# OS
+.DS_Store
