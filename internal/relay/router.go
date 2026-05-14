@@ -78,9 +78,9 @@ func (r *Router) OnDeliverAck(ctx context.Context, deviceKey RecipientKey, blobI
 // The relay allows multiple concurrent Receive Sessions for the same key.
 // hush-sync opens exactly one Receive Session per HushSession and replaces
 // it atomically on reconnect, so genuine concurrency is rare (brief overlap
-// during reconnect only). The relay relies on atomic Flush (fetch+delete in
-// a single serialisable transaction) to prevent double-delivery: only one
-// session wins the race; the other gets an empty result. This behaviour is
+// during reconnect only). The relay uses Peek (non-destructive); blobs are
+// deleted only after DeliverAck. With concurrent sessions both may deliver the
+// same blob — deduplication is the client's responsibility. This behaviour is
 // tested in TestRouter_TwoConcurrentReceiveSessions_NoDoubleDelivery.
 func (r *Router) OnReceiveConnect(ctx context.Context, deviceKey RecipientKey) <-chan DeliveryBlob {
 	log.Printf("recv: device connected  key=%x", deviceKey[:4])	// deliverCh buffers up to 256 blobs between the delivery goroutine and

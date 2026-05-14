@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"sync"
@@ -137,7 +138,28 @@ func main() {
 		}
 	}()
 
-	log.Printf("hush-relay running (push=%s receive=%s)", cfg.Relay.ListenPush, cfg.Relay.ListenReceive)
+	log.Printf("hush-relay running (push=%s receive=%s health=%s)", cfg.Relay.ListenPush, cfg.Relay.ListenReceive, cfg.Relay.ListenHealth)
+
+	// Health endpoint — GET /healthz returns 200 OK while the relay is running.
+	// Useful for container health checks and load balancer probes.
+	healthSrv := &http.Server{
+		Addr: cfg.Relay.ListenHealth,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("ok"))
+		}),
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 5 * time.Second,
+	}
+	go func() {
+		if err := healthSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("health: server error: %v", err)
+		}
+	}()
+	go func() {
+		<-ctx.Done()
+		_ = healthSrv.Shutdown(context.Background())
+	}()
 	<-ctx.Done()
 	log.Printf("shutting down — draining active sessions (30s timeout)")
 	done := make(chan struct{})

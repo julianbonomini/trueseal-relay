@@ -96,9 +96,11 @@ func AcceptReceive(conn net.Conn, relayKey noise.DHKey, handler Handler) error {
 			frame := Frame(MsgTypeDeliver, body)
 			encrypted, err := cs2.Encrypt(nil, nil, frame)
 			if err != nil {
+				log.Printf("recv: encrypt deliver failed  key=%x  blob_id=%d: %v", deviceKey[:4], blob.BlobID, err)
 				return
 			}
 			if err := writeNoiseMsg(conn, encrypted); err != nil {
+				log.Printf("recv: write deliver failed  key=%x  blob_id=%d: %v", deviceKey[:4], blob.BlobID, err)
 				return
 			}
 		}
@@ -138,7 +140,9 @@ func AcceptReceive(conn net.Conn, relayKey noise.DHKey, handler Handler) error {
 			if !ok {
 				continue
 			}
-			_ = handler.OnDeliverAck(ctx, deviceKey, int64(blobID))
+			if err := handler.OnDeliverAck(ctx, deviceKey, int64(blobID)); err != nil {
+				log.Printf("recv: OnDeliverAck failed  key=%x  blob_id=%d: %v", deviceKey[:4], blobID, err)
+			}
 		default:
 			// drop silently
 		}

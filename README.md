@@ -53,7 +53,9 @@ Configuration is via TOML file or environment variables. Environment variables o
 | `HUSH_RELAY_STORE_SQLITE_PATH` | — | **Required** (SQLite). Path to SQLite database file |
 | `HUSH_RELAY_LISTEN_RECEIVE` | `:7700` | XX receive session listener |
 | `HUSH_RELAY_LISTEN_PUSH` | `:7701` | NK push session listener |
+| `HUSH_RELAY_LISTEN_HEALTH` | `:7702` | HTTP health endpoint (`GET /healthz → 200 OK`) |
 | `HUSH_RELAY_STORE_TYPE` | `sqlite` | Storage adapter: `sqlite` or `postgres` |
+| `HUSH_RELAY_MAX_ENVELOPE_BYTES` | `65482` | Max envelope bytes per Push frame (Noise u16 framing ceiling) |
 
 ### TOML file
 
@@ -62,6 +64,7 @@ Configuration is via TOML file or environment variables. Environment variables o
 keypair_path   = "/data/keypair.hex"
 listen_push    = ":7701"
 listen_receive = ":7700"
+listen_health  = ":7702"             # GET /healthz → 200 OK
 ttl            = "720h"        # envelope TTL (default: 30 days)
 reap_interval  = "1h"          # how often expired envelopes are reaped
 

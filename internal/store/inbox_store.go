@@ -22,18 +22,13 @@ type InboxBlob struct {
 // See ADR-0003 (durable until delivery) and ADR-0007 (hexagonal architecture).
 type InboxStore interface {
 	// Put stores an envelope in the inbox for recipientKey.
-	// The envelope is held durably until Flush or TTL expiry.
+	// The envelope is held durably until DeleteByIDs (after DeliverAck) or TTL expiry.
 	// Must persist across crashes — returning nil guarantees the blob
 	// survives a process restart.
 	// Put does not deduplicate — if the same envelope is stored twice
 	// (e.g. outbox replay after a crash), both copies are stored.
 	// Deduplication is the recipient client's responsibility.
 	Put(ctx context.Context, recipientKey []byte, envelope []byte, ttl time.Duration) error
-
-	// Flush atomically fetches and deletes all envelopes for recipientKey.
-	// The fetch and delete are a single transaction — no envelope is
-	// returned twice, and no returned envelope remains in the store.
-	Flush(ctx context.Context, recipientKey []byte) ([][]byte, error)
 
 	// Peek fetches all envelopes for recipientKey without deleting them.
 	// Returns InboxBlob values carrying the store-assigned ID alongside content.

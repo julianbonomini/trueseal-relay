@@ -6,6 +6,7 @@ services:
     ports:
       - "7700:7700"   # Receive sessions (Noise XX) — devices
       - "7701:7701"   # Push sessions (Noise NK) — hush-sync
+      - "7702:7702"   # Health endpoint — GET /healthz
     volumes:
       - relay-data:/data
     environment:
@@ -16,6 +17,7 @@ services:
       # HUSH_RELAY_LISTEN_RECEIVE: ":7700"
       # HUSH_RELAY_LISTEN_PUSH: ":7701"
       # HUSH_RELAY_STORE_TYPE: sqlite
+      # HUSH_RELAY_LISTEN_HEALTH: ":7702"
       # HUSH_RELAY_TTL: "720h"
       # HUSH_RELAY_REAP_INTERVAL: "1h"
     # -no-config: skip TOML file loading; all settings come from env vars above.

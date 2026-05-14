@@ -9,9 +9,12 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// DefaultMaxEnvelopeBytes is the default maximum envelope size (1 MiB).
-// Applied to body[32:] of every Push frame — the raw protobuf Envelope bytes.
-const DefaultMaxEnvelopeBytes = 1 << 20 // 1 MiB
+// DefaultMaxEnvelopeBytes is the default maximum envelope size.
+// The Noise transport framing uses a u16 length prefix (max 65 535 bytes).
+// After subtracting the 16-byte AEAD tag, 5-byte frame header, and 32-byte
+// recipient key prefix, the effective max envelope is 65 482 bytes.
+// Operator-configurable; values above 65 482 are silently unreachable.
+const DefaultMaxEnvelopeBytes = 65_482
 
 // DefaultTTL is the default envelope TTL (30 days).
 const DefaultTTL = 30 * 24 * time.Hour
@@ -31,6 +34,7 @@ type RelayConfig struct {
 	KeypairPath      string        `toml:"keypair_path"`
 	ListenPush       string        `toml:"listen_push"`
 	ListenReceive    string        `toml:"listen_receive"`
+	ListenHealth     string        `toml:"listen_health"`
 	TTL              time.Duration `toml:"ttl"`
 	ReapInterval     time.Duration `toml:"reap_interval"`
 	// MaxEnvelopeBytes is the maximum size of the protobuf Envelope bytes
@@ -82,6 +86,9 @@ func setDefaults(cfg *Config) {
 	if cfg.Relay.ListenReceive == "" {
 		cfg.Relay.ListenReceive = ":7700"
 	}
+	if cfg.Relay.ListenHealth == "" {
+		cfg.Relay.ListenHealth = ":7702"
+	}
 	if cfg.Relay.MaxEnvelopeBytes <= 0 {
 		cfg.Relay.MaxEnvelopeBytes = DefaultMaxEnvelopeBytes
 	}
@@ -99,6 +106,9 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("HUSH_RELAY_LISTEN_RECEIVE"); v != "" {
 		cfg.Relay.ListenReceive = v
+	}
+	if v := os.Getenv("HUSH_RELAY_LISTEN_HEALTH"); v != "" {
+		cfg.Relay.ListenHealth = v
 	}
 	if v := os.Getenv("HUSH_RELAY_STORE_TYPE"); v != "" {
 		cfg.Store.Type = v
