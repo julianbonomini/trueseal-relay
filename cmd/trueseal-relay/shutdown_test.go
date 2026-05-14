@@ -8,10 +8,10 @@ import (
 	"time"
 
 	"github.com/flynn/noise"
-	"github.com/julianbonomini/hush-relay/internal/notify/inprocess"
-	"github.com/julianbonomini/hush-relay/internal/relay"
-	"github.com/julianbonomini/hush-relay/internal/session"
-	sqlitestore "github.com/julianbonomini/hush-relay/internal/store/sqlite"
+	"github.com/julianbonomini/trueseal-relay/internal/notify/inprocess"
+	"github.com/julianbonomini/trueseal-relay/internal/relay"
+	"github.com/julianbonomini/trueseal-relay/internal/session"
+	sqlitestore "github.com/julianbonomini/trueseal-relay/internal/store/sqlite"
 )
 
 // TestGracefulShutdown_WaitsForActiveSession verifies that the relay's

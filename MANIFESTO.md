@@ -1,8 +1,8 @@
-# hush-relay Manifesto
+# trueseal-relay Manifesto
 
 ## Purpose
 
-A relay is a forced trust boundary. hush-relay exists to eliminate that forcing.
+A relay is a forced trust boundary. trueseal-relay exists to eliminate that forcing.
 
 ## Principles
 

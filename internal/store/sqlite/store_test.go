@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/julianbonomini/hush-relay/internal/store/sqlite"
+	"github.com/julianbonomini/trueseal-relay/internal/store/sqlite"
 )
 
 // ── helpers ──────────────────────────────────────────────────────────────────

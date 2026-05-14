@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/julianbonomini/hush-relay/internal/keypair"
+	"github.com/julianbonomini/trueseal-relay/internal/keypair"
 )
 
 // Valid hex keypair file loads successfully and public key is derived.

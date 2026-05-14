@@ -1,8 +1,8 @@
-# hush-relay
+# trueseal-relay
 
-Encrypted blob relay for [hush-sync](https://github.com/julianbonomini/hush-sync). Accepts ciphertext from senders, holds it for offline recipients, delivers on reconnect. Routes by recipient public key only — content, sender identity, and group membership are structurally unknowable.
+Encrypted blob relay for [trueseal-sync](https://github.com/julianbonomini/trueseal-sync). Accepts ciphertext from senders, holds it for offline recipients, delivers on reconnect. Routes by recipient public key only — content, sender identity, and group membership are structurally unknowable.
 
-Implements [hush-protocol](https://github.com/julianbonomini/hush-protocol) on the server side.
+Implements [trueseal-protocol](https://github.com/julianbonomini/trueseal-protocol) on the server side.
 
 ---
 
@@ -13,7 +13,7 @@ Two TCP listeners, both Noise-encrypted:
 | Port | Noise pattern | Direction | Lifetime |
 |------|--------------|-----------|----------|
 | `7700` | XX — mutual auth | device ↔ relay | long-lived, one per device |
-| `7701` | NK — relay-only auth | hush-sync → relay | short-lived, one per push batch |
+| `7701` | NK — relay-only auth | trueseal-sync → relay | short-lived, one per push batch |
 
 NK means the sender is anonymous — the relay cannot link a push session to any device or receive session. XX means both sides authenticate; the relay registers the device's stable public key and delivers its inbox immediately on connect.
 
@@ -22,8 +22,8 @@ NK means the sender is anonymous — the relay cannot link a push session to any
 ## Quick start
 
 ```sh
-git clone https://github.com/julianbonomini/hush-relay
-cd hush-relay
+git clone https://github.com/julianbonomini/trueseal-relay
+cd trueseal-relay
 docker compose up -d
 
 # Print the relay public key — distribute this to your clients
@@ -40,23 +40,23 @@ Env vars (used in Docker) or TOML file (pass with `-config`). Env vars override 
 
 | Variable | Default | |
 |----------|---------|--|
-| `HUSH_RELAY_KEYPAIR_PATH` | — | **Required** |
-| `HUSH_RELAY_STORE_SQLITE_PATH` | — | **Required** (SQLite) |
-| `HUSH_RELAY_LISTEN_RECEIVE` | `:7700` | |
-| `HUSH_RELAY_LISTEN_PUSH` | `:7701` | |
-| `HUSH_RELAY_LISTEN_HEALTH` | `:7702` | `GET /healthz → 200 ok` |
-| `HUSH_RELAY_STORE_TYPE` | `sqlite` | `sqlite` or `postgres` |
-| `HUSH_RELAY_TTL` | `720h` | undelivered blob retention |
-| `HUSH_RELAY_REAP_INTERVAL` | `1h` | |
-| `HUSH_RELAY_MAX_CONNECTIONS` | `1000` | per listener; excess connections rejected |
-| `HUSH_RELAY_MAX_ENVELOPE_BYTES` | `65482` | Noise u16 framing ceiling |
+| `TRUESEAL_RELAY_KEYPAIR_PATH` | — | **Required** |
+| `TRUESEAL_RELAY_STORE_SQLITE_PATH` | — | **Required** (SQLite) |
+| `TRUESEAL_RELAY_LISTEN_RECEIVE` | `:7700` | |
+| `TRUESEAL_RELAY_LISTEN_PUSH` | `:7701` | |
+| `TRUESEAL_RELAY_LISTEN_HEALTH` | `:7702` | `GET /healthz → 200 ok` |
+| `TRUESEAL_RELAY_STORE_TYPE` | `sqlite` | `sqlite` or `postgres` |
+| `TRUESEAL_RELAY_TTL` | `720h` | undelivered blob retention |
+| `TRUESEAL_RELAY_REAP_INTERVAL` | `1h` | |
+| `TRUESEAL_RELAY_MAX_CONNECTIONS` | `1000` | per listener; excess connections rejected |
+| `TRUESEAL_RELAY_MAX_ENVELOPE_BYTES` | `65482` | Noise u16 framing ceiling |
 
 Full annotated example: [`config/relay.toml`](config/relay.toml).
 
 To use a config file instead of env vars:
 
 ```sh
-hush-relay -config /path/to/relay.toml
+trueseal-relay -config /path/to/relay.toml
 ```
 
 ---
@@ -67,10 +67,10 @@ The relay's X25519 keypair is used in both Noise handshakes. Devices verify it b
 
 ```sh
 # Docker
-docker compose run --rm relay /hush-relay -genkey -keyout /data/keypair.hex
+docker compose run --rm relay /trueseal-relay -genkey -keyout /data/keypair.hex
 
 # Local binary
-./hush-relay -genkey -keyout keypair.hex
+./trueseal-relay -genkey -keyout keypair.hex
 ```
 
 The public key is printed on generation. The private key lives in the Docker volume and is never baked into the image.
@@ -82,7 +82,7 @@ The public key is printed on generation. The private key lives in the Docker vol
 Go 1.26+. Pure Go — no CGo, no external C dependencies.
 
 ```sh
-make build        # → ./hush-relay
+make build        # → ./trueseal-relay
 make test
 make docker-build
 ```
@@ -91,7 +91,7 @@ make docker-build
 
 ## Clustering
 
-Default deployment is single-node SQLite. A Postgres backend for multi-node clustering (shared inbox, no sticky sessions) is tracked in [#9](https://github.com/julianbonomini/hush-relay/issues/9).
+Default deployment is single-node SQLite. A Postgres backend for multi-node clustering (shared inbox, no sticky sessions) is tracked in [#9](https://github.com/julianbonomini/trueseal-relay/issues/9).
 
 ---
 
@@ -101,4 +101,4 @@ Default deployment is single-node SQLite. A Postgres backend for multi-node clus
 - **Durable until delivered** — accepted blobs survive crashes (WAL + `synchronous=FULL`); Ack sent only after persistence
 - **Replaceable** — no specific instance is load-bearing; swap or scale without changing the security model
 
-→ [MANIFESTO.md](MANIFESTO.md) · [hush-protocol wire spec](https://github.com/julianbonomini/hush-protocol)
+→ [MANIFESTO.md](MANIFESTO.md) · [trueseal-protocol wire spec](https://github.com/julianbonomini/trueseal-protocol)

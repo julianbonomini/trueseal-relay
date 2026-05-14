@@ -13,7 +13,7 @@ type RecipientKey [32]byte
 //
 // Raw is the entire serialized proto Envelope received from the Push Session.
 // It is stored verbatim and forwarded verbatim to the recipient's Receive Session.
-// The recipient's hush-sync client deserializes, decrypts, and verifies it.
+// The recipient's trueseal-sync client deserializes, decrypts, and verifies it.
 type Envelope struct {
 	// Recipient is extracted from the proto Envelope's recipient_pub field.
 	// Used for routing only — to know which Inbox to store the blob in.

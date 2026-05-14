@@ -1,6 +1,6 @@
 # Noise XX and NK over TCP for device-to-relay connections
 
-Two session types exist, each using a different Noise handshake pattern over raw TCP. Both reuse the single cryptographic vocabulary of the hush stack — everything is keypairs, everything is Noise.
+Two session types exist, each using a different Noise handshake pattern over raw TCP. Both reuse the single cryptographic vocabulary of the trueseal stack — everything is keypairs, everything is Noise.
 
 **Receive Sessions use Noise XX** — mutual authentication. The Device and the relay verify each other's static public keys. The relay learns the Device's stable identity (its static public key) and registers it as online for immediate delivery. Forward secrecy is provided by the handshake.
 

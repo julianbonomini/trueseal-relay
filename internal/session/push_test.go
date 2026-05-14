@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/flynn/noise"
-	"github.com/julianbonomini/hush-relay/internal/relay"
-	"github.com/julianbonomini/hush-relay/internal/session"
+	"github.com/julianbonomini/trueseal-relay/internal/relay"
+	"github.com/julianbonomini/trueseal-relay/internal/session"
 )
 
 // mockHandler records OnPush calls. OnReceiveConnect is not used in push tests.

@@ -3,7 +3,7 @@ package session
 import (
 	"context"
 
-	"github.com/julianbonomini/hush-relay/internal/relay"
+	"github.com/julianbonomini/trueseal-relay/internal/relay"
 )
 
 // Handler is the interface the routing loop implements.

@@ -1,4 +1,4 @@
-module github.com/julianbonomini/hush-relay
+module github.com/julianbonomini/trueseal-relay
 
 go 1.26.2
 

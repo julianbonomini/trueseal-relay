@@ -23,7 +23,7 @@ internal/session/push_test.go:548:20: undefined: session.MsgTypeError
 
 3. **`internal/session/push_test.go`** — Updated `TestAcceptPush_NoAckOnOnPushError`: the old test checked for silence (no data at all), but the correct new behavior is an `Error` frame. Updated it to decrypt the response and assert `MsgTypeError`, not `MsgTypeAck`. Added the new `TestAcceptPush_ErrorFrameOnOnPushError`.
 
-4. **`docs/adr/0008-wire-protocol-framing.md`** — Added `0x05 | Error | relay → client | empty` to the message type table. Added two new sections: **Error semantics** (permanent rejection, non-retryable, body is empty by design — relay is blind) and **Two-layer enforcement model** (hush-sync as primary, relay as backstop for non-compliant clients; 1 MiB default sourced from hush-sync `MAX_ENVELOPE_BYTES`).
+4. **`docs/adr/0008-wire-protocol-framing.md`** — Added `0x05 | Error | relay → client | empty` to the message type table. Added two new sections: **Error semantics** (permanent rejection, non-retryable, body is empty by design — relay is blind) and **Two-layer enforcement model** (trueseal-sync as primary, relay as backstop for non-compliant clients; 1 MiB default sourced from trueseal-sync `MAX_ENVELOPE_BYTES`).
 
 **REFACTOR** — No refactoring was necessary; the change was minimal and clean.
 
@@ -43,14 +43,14 @@ internal/session/push_test.go:548:20: undefined: session.MsgTypeError
 ## Test results
 
 ```
-ok  github.com/julianbonomini/hush-relay/cmd/hush-relay
-ok  github.com/julianbonomini/hush-relay/internal/config
-ok  github.com/julianbonomini/hush-relay/internal/keypair
-ok  github.com/julianbonomini/hush-relay/internal/notify/inprocess
-ok  github.com/julianbonomini/hush-relay/internal/relay
-ok  github.com/julianbonomini/hush-relay/internal/session
-ok  github.com/julianbonomini/hush-relay/internal/store
-ok  github.com/julianbonomini/hush-relay/internal/store/sqlite
+ok  github.com/julianbonomini/trueseal-relay/cmd/trueseal-relay
+ok  github.com/julianbonomini/trueseal-relay/internal/config
+ok  github.com/julianbonomini/trueseal-relay/internal/keypair
+ok  github.com/julianbonomini/trueseal-relay/internal/notify/inprocess
+ok  github.com/julianbonomini/trueseal-relay/internal/relay
+ok  github.com/julianbonomini/trueseal-relay/internal/session
+ok  github.com/julianbonomini/trueseal-relay/internal/store
+ok  github.com/julianbonomini/trueseal-relay/internal/store/sqlite
 ```
 
 All 9 packages pass. No existing tests broken.

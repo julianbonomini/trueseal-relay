@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/julianbonomini/hush-relay/internal/config"
+	"github.com/julianbonomini/trueseal-relay/internal/config"
 )
 
 func writeFile(t *testing.T, content string) string {
@@ -20,7 +20,7 @@ func writeFile(t *testing.T, content string) string {
 
 const validTOML = `
 [relay]
-keypair_path   = "/etc/hush-relay/keypair.hex"
+keypair_path   = "/etc/trueseal-relay/keypair.hex"
 listen_push    = ":7701"
 listen_receive = ":7700"
 ttl            = "720h"
@@ -28,13 +28,13 @@ reap_interval  = "1h"
 
 [store]
 type        = "sqlite"
-sqlite_path = "/var/lib/hush-relay/inbox.db"
+sqlite_path = "/var/lib/trueseal-relay/inbox.db"
 `
 
 // If config file does not exist, falls back to defaults + env vars only.
 func TestConfig_MissingFileUsesEnvVars(t *testing.T) {
-	t.Setenv("HUSH_RELAY_KEYPAIR_PATH", "/data/keypair.hex")
-	t.Setenv("HUSH_RELAY_STORE_SQLITE_PATH", "/data/inbox.db")
+	t.Setenv("TRUESEAL_RELAY_KEYPAIR_PATH", "/data/keypair.hex")
+	t.Setenv("TRUESEAL_RELAY_STORE_SQLITE_PATH", "/data/inbox.db")
 
 	cfg, err := config.Load("/nonexistent/relay.toml")
 	if err != nil {
@@ -52,7 +52,7 @@ func TestConfig_ParsesValidTOML(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Relay.KeypairPath != "/etc/hush-relay/keypair.hex" {
+	if cfg.Relay.KeypairPath != "/etc/trueseal-relay/keypair.hex" {
 		t.Errorf("KeypairPath: got %q", cfg.Relay.KeypairPath)
 	}
 	if cfg.Relay.ListenPush != ":7701" {
@@ -64,7 +64,7 @@ func TestConfig_ParsesValidTOML(t *testing.T) {
 	if cfg.Store.Type != "sqlite" {
 		t.Errorf("Store.Type: got %q", cfg.Store.Type)
 	}
-	if cfg.Store.SQLitePath != "/var/lib/hush-relay/inbox.db" {
+	if cfg.Store.SQLitePath != "/var/lib/trueseal-relay/inbox.db" {
 		t.Errorf("SQLitePath: got %q", cfg.Store.SQLitePath)
 	}
 }
@@ -127,12 +127,12 @@ sqlite_path = "/tmp/inbox.db"
 	}
 }
 
-// Env vars HUSH_RELAY_TTL and HUSH_RELAY_REAP_INTERVAL override duration fields.
+// Env vars TRUESEAL_RELAY_TTL and TRUESEAL_RELAY_REAP_INTERVAL override duration fields.
 func TestConfig_TTLAndReapIntervalEnvOverrides(t *testing.T) {
-	t.Setenv("HUSH_RELAY_KEYPAIR_PATH", "/data/keypair.hex")
-	t.Setenv("HUSH_RELAY_STORE_SQLITE_PATH", "/data/inbox.db")
-	t.Setenv("HUSH_RELAY_TTL", "48h")
-	t.Setenv("HUSH_RELAY_REAP_INTERVAL", "30m")
+	t.Setenv("TRUESEAL_RELAY_KEYPAIR_PATH", "/data/keypair.hex")
+	t.Setenv("TRUESEAL_RELAY_STORE_SQLITE_PATH", "/data/inbox.db")
+	t.Setenv("TRUESEAL_RELAY_TTL", "48h")
+	t.Setenv("TRUESEAL_RELAY_REAP_INTERVAL", "30m")
 
 	cfg, err := config.Load("/nonexistent/relay.toml")
 	if err != nil {
@@ -146,12 +146,12 @@ func TestConfig_TTLAndReapIntervalEnvOverrides(t *testing.T) {
 	}
 }
 
-// Invalid duration strings for HUSH_RELAY_TTL and HUSH_RELAY_REAP_INTERVAL are ignored.
+// Invalid duration strings for TRUESEAL_RELAY_TTL and TRUESEAL_RELAY_REAP_INTERVAL are ignored.
 func TestConfig_InvalidDurationEnvIgnored(t *testing.T) {
-	t.Setenv("HUSH_RELAY_KEYPAIR_PATH", "/data/keypair.hex")
-	t.Setenv("HUSH_RELAY_STORE_SQLITE_PATH", "/data/inbox.db")
-	t.Setenv("HUSH_RELAY_TTL", "not-a-duration")
-	t.Setenv("HUSH_RELAY_REAP_INTERVAL", "also-bad")
+	t.Setenv("TRUESEAL_RELAY_KEYPAIR_PATH", "/data/keypair.hex")
+	t.Setenv("TRUESEAL_RELAY_STORE_SQLITE_PATH", "/data/inbox.db")
+	t.Setenv("TRUESEAL_RELAY_TTL", "not-a-duration")
+	t.Setenv("TRUESEAL_RELAY_REAP_INTERVAL", "also-bad")
 
 	cfg, err := config.Load("/nonexistent/relay.toml")
 	if err != nil {
@@ -168,7 +168,7 @@ func TestConfig_InvalidDurationEnvIgnored(t *testing.T) {
 
 func TestConfig_EnvOverride(t *testing.T) {
 	p := writeFile(t, validTOML)
-	t.Setenv("HUSH_RELAY_STORE_SQLITE_PATH", "/tmp/override.db")
+	t.Setenv("TRUESEAL_RELAY_STORE_SQLITE_PATH", "/tmp/override.db")
 
 	cfg, err := config.Load(p)
 	if err != nil {

@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/julianbonomini/hush-relay/internal/notify/inprocess"
-	"github.com/julianbonomini/hush-relay/internal/relay"
-	sqlitestore "github.com/julianbonomini/hush-relay/internal/store/sqlite"
+	"github.com/julianbonomini/trueseal-relay/internal/notify/inprocess"
+	"github.com/julianbonomini/trueseal-relay/internal/relay"
+	sqlitestore "github.com/julianbonomini/trueseal-relay/internal/store/sqlite"
 )
 
 func newRouter(t *testing.T) *relay.Router {

@@ -22,8 +22,8 @@ const DefaultTTL = 30 * 24 * time.Hour
 // DefaultReapInterval is the default reaper run interval.
 const DefaultReapInterval = time.Hour
 
-// Config is the operator-facing configuration for hush-relay.
-// Source: TOML file, with optional env var overrides (HUSH_RELAY_ prefix).
+// Config is the operator-facing configuration for trueseal-relay.
+// Source: TOML file, with optional env var overrides (TRUESEAL_RELAY_ prefix).
 type Config struct {
 	Relay RelayConfig `toml:"relay"`
 	Store StoreConfig `toml:"store"`
@@ -105,52 +105,52 @@ func setDefaults(cfg *Config) {
 }
 
 func applyEnvOverrides(cfg *Config) {
-	if v := os.Getenv("HUSH_RELAY_KEYPAIR_PATH"); v != "" {
+	if v := os.Getenv("TRUESEAL_RELAY_KEYPAIR_PATH"); v != "" {
 		cfg.Relay.KeypairPath = v
 	}
-	if v := os.Getenv("HUSH_RELAY_LISTEN_PUSH"); v != "" {
+	if v := os.Getenv("TRUESEAL_RELAY_LISTEN_PUSH"); v != "" {
 		cfg.Relay.ListenPush = v
 	}
-	if v := os.Getenv("HUSH_RELAY_LISTEN_RECEIVE"); v != "" {
+	if v := os.Getenv("TRUESEAL_RELAY_LISTEN_RECEIVE"); v != "" {
 		cfg.Relay.ListenReceive = v
 	}
-	if v := os.Getenv("HUSH_RELAY_LISTEN_HEALTH"); v != "" {
+	if v := os.Getenv("TRUESEAL_RELAY_LISTEN_HEALTH"); v != "" {
 		cfg.Relay.ListenHealth = v
 	}
-	if v := os.Getenv("HUSH_RELAY_STORE_TYPE"); v != "" {
+	if v := os.Getenv("TRUESEAL_RELAY_STORE_TYPE"); v != "" {
 		cfg.Store.Type = v
 	}
-	if v := os.Getenv("HUSH_RELAY_STORE_SQLITE_PATH"); v != "" {
+	if v := os.Getenv("TRUESEAL_RELAY_STORE_SQLITE_PATH"); v != "" {
 		cfg.Store.SQLitePath = v
 	}
-	if v := os.Getenv("HUSH_RELAY_TTL"); v != "" {
+	if v := os.Getenv("TRUESEAL_RELAY_TTL"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.Relay.TTL = d
 		} else {
-			log.Printf("config: ignoring invalid HUSH_RELAY_TTL %q: %v", v, err)
+			log.Printf("config: ignoring invalid TRUESEAL_RELAY_TTL %q: %v", v, err)
 		}
 	}
-	if v := os.Getenv("HUSH_RELAY_REAP_INTERVAL"); v != "" {
+	if v := os.Getenv("TRUESEAL_RELAY_REAP_INTERVAL"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.Relay.ReapInterval = d
 		} else {
-			log.Printf("config: ignoring invalid HUSH_RELAY_REAP_INTERVAL %q: %v", v, err)
+			log.Printf("config: ignoring invalid TRUESEAL_RELAY_REAP_INTERVAL %q: %v", v, err)
 		}
 	}
-	if v := os.Getenv("HUSH_RELAY_MAX_CONNECTIONS"); v != "" {
+	if v := os.Getenv("TRUESEAL_RELAY_MAX_CONNECTIONS"); v != "" {
 		var n int
 		if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n > 0 {
 			cfg.Relay.MaxConnections = n
 		} else {
-			log.Printf("config: ignoring invalid HUSH_RELAY_MAX_CONNECTIONS %q", v)
+			log.Printf("config: ignoring invalid TRUESEAL_RELAY_MAX_CONNECTIONS %q", v)
 		}
 	}
-	if v := os.Getenv("HUSH_RELAY_MAX_ENVELOPE_BYTES"); v != "" {
+	if v := os.Getenv("TRUESEAL_RELAY_MAX_ENVELOPE_BYTES"); v != "" {
 		var n int64
 		if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n > 0 {
 			cfg.Relay.MaxEnvelopeBytes = n
 		} else {
-			log.Printf("config: ignoring invalid HUSH_RELAY_MAX_ENVELOPE_BYTES %q", v)
+			log.Printf("config: ignoring invalid TRUESEAL_RELAY_MAX_ENVELOPE_BYTES %q", v)
 		}
 	}
 }

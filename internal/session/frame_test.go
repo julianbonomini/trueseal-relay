@@ -3,7 +3,7 @@ package session_test
 import (
 	"testing"
 
-	"github.com/julianbonomini/hush-relay/internal/session"
+	"github.com/julianbonomini/trueseal-relay/internal/session"
 )
 
 // DeliverAck round-trips through Frame/Parse.

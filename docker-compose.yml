@@ -1,25 +1,25 @@
 services:
   relay:
     build: .
-    image: hush-relay:latest
+    image: trueseal-relay:latest
     restart: unless-stopped
     ports:
       - "7700:7700"   # Receive sessions (Noise XX) — devices
-      - "7701:7701"   # Push sessions (Noise NK) — hush-sync
+      - "7701:7701"   # Push sessions (Noise NK) — trueseal-sync
       - "7702:7702"   # Health endpoint — GET /healthz
     volumes:
       - relay-data:/data
     environment:
       # Required: paths inside the /data volume (auto-created on first run)
-      HUSH_RELAY_KEYPAIR_PATH: /data/keypair.hex
-      HUSH_RELAY_STORE_SQLITE_PATH: /data/inbox.db
+      TRUESEAL_RELAY_KEYPAIR_PATH: /data/keypair.hex
+      TRUESEAL_RELAY_STORE_SQLITE_PATH: /data/inbox.db
       # Optional overrides (defaults shown)
-      # HUSH_RELAY_LISTEN_RECEIVE: ":7700"
-      # HUSH_RELAY_LISTEN_PUSH: ":7701"
-      # HUSH_RELAY_STORE_TYPE: sqlite
-      # HUSH_RELAY_LISTEN_HEALTH: ":7702"
-      # HUSH_RELAY_TTL: "720h"
-      # HUSH_RELAY_REAP_INTERVAL: "1h"
+      # TRUESEAL_RELAY_LISTEN_RECEIVE: ":7700"
+      # TRUESEAL_RELAY_LISTEN_PUSH: ":7701"
+      # TRUESEAL_RELAY_STORE_TYPE: sqlite
+      # TRUESEAL_RELAY_LISTEN_HEALTH: ":7702"
+      # TRUESEAL_RELAY_TTL: "720h"
+      # TRUESEAL_RELAY_REAP_INTERVAL: "1h"
     # -no-config: skip TOML file loading; all settings come from env vars above.
     # To use a config file instead, mount it and pass -config /path/to/relay.toml.
     command: ["-no-config"]

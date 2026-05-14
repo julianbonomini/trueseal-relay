@@ -1,5 +1,5 @@
 # Build artifacts
-hush-relay
+trueseal-relay
 *.exe
 
 # Go test cache

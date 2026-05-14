@@ -2,7 +2,7 @@
 
 ### Issue tracker
 
-Issues live in GitHub Issues (`julianbonomini/hush-relay`). See `docs/agents/issue-tracker.md`.
+Issues live in GitHub Issues (`julianbonomini/trueseal-relay`). See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
@@ -10,4 +10,4 @@ Default label vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `read
 
 ### Domain docs
 
-Single-context layout — one `CONTEXT.md` + `docs/adr/` at the repo root. Protocol-level terms are owned by `hush-sync/CONTEXT.md`. See `docs/agents/domain.md`.
+Single-context layout — one `CONTEXT.md` + `docs/adr/` at the repo root. Protocol-level terms are owned by `trueseal-sync/CONTEXT.md`. See `docs/agents/domain.md`.

@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/flynn/noise"
-	"github.com/julianbonomini/hush-relay/internal/relay"
-	"github.com/julianbonomini/hush-relay/internal/session"
+	"github.com/julianbonomini/trueseal-relay/internal/relay"
+	"github.com/julianbonomini/trueseal-relay/internal/session"
 )
 
 // receiveHandler records OnReceiveConnect calls and delivers blobs via a channel.

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/julianbonomini/hush-relay/internal/store"
+	"github.com/julianbonomini/trueseal-relay/internal/store"
 	_ "modernc.org/sqlite" // registers the "sqlite" driver
 )
 

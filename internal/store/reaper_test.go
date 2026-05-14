@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/julianbonomini/hush-relay/internal/store"
-	sqlitestore "github.com/julianbonomini/hush-relay/internal/store/sqlite"
+	"github.com/julianbonomini/trueseal-relay/internal/store"
+	sqlitestore "github.com/julianbonomini/trueseal-relay/internal/store/sqlite"
 )
 
 func newStore(t *testing.T) *sqlitestore.Store {

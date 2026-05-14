@@ -1,8 +1,8 @@
-# hush-relay
+# trueseal-relay
 
-A deployable Go binary providing encrypted blob routing for the hush ecosystem. The relay is the infrastructure layer of the hush stack — a zero-knowledge, always-in-path intermediary that stores and forwards ciphertext blobs between Devices. It never decrypts content and never learns group membership.
+A deployable Go binary providing encrypted blob routing for the trueseal ecosystem. The relay is the infrastructure layer of the trueseal stack — a zero-knowledge, always-in-path intermediary that stores and forwards ciphertext blobs between Devices. It never decrypts content and never learns group membership.
 
-See [hush-sync](https://github.com/julianbonomini/hush-sync) for the client library, protocol definitions, and envelope format that hush-relay implements.
+See [trueseal-sync](https://github.com/julianbonomini/trueseal-sync) for the client library, protocol definitions, and envelope format that trueseal-relay implements.
 
 ## Language
 
@@ -35,11 +35,11 @@ The act of deleting an Envelope whose TTL has elapsed without Delivery. Performe
 _Avoid_: purge, eviction, expiry, cleanup
 
 **Node**:
-A single running instance of the hush-relay binary. Multiple Nodes may be deployed as a cluster, sharing a common Inbox store. Any Node can fail or be replaced without affecting the security model or losing accepted Envelopes. No Node holds state that is not shared.
+A single running instance of the trueseal-relay binary. Multiple Nodes may be deployed as a cluster, sharing a common Inbox store. Any Node can fail or be replaced without affecting the security model or losing accepted Envelopes. No Node holds state that is not shared.
 _Avoid_: server, instance, replica
 
 **Operator**:
-The person or organisation deploying hush-relay. Responsible for: generating and safeguarding the relay Keypair, distributing the relay public key to Device operators, and configuring TTL and blob size limits. hush-relay makes no assumptions about who the operator is — a relay run by a trusted friend and a relay run by an adversary provide identical security guarantees to end users. Deployment is self-contained: a single binary or docker compose, no external dependencies required for a single-Node deployment.
+The person or organisation deploying trueseal-relay. Responsible for: generating and safeguarding the relay Keypair, distributing the relay public key to Device operators, and configuring TTL and blob size limits. trueseal-relay makes no assumptions about who the operator is — a relay run by a trusted friend and a relay run by an adversary provide identical security guarantees to end users. Deployment is self-contained: a single binary or docker compose, no external dependencies required for a single-Node deployment.
 _Avoid_: admin, owner, host
 
 ## Relationships
@@ -63,15 +63,15 @@ _Avoid_: admin, owner, host
 > **Operator:** "Can I see what's being synced through my relay?"
 > **Domain expert:** "No. Every blob is encrypted with the recipient's public key before it reaches the relay. You operate the infrastructure; you cannot read the content."
 
-> **Developer:** "Can hush-relay send push notifications to wake up a sleeping app?"
-> **Domain expert:** "No. Push notifications require knowing a device's APNs or FCM token — that's device identity. The relay has no concept of identity beyond public keys. Offline delivery is handled by the relay's Inbox and hush-sync's outbox replay when the device reconnects."
+> **Developer:** "Can trueseal-relay send push notifications to wake up a sleeping app?"
+> **Domain expert:** "No. Push notifications require knowing a device's APNs or FCM token — that's device identity. The relay has no concept of identity beyond public keys. Offline delivery is handled by the relay's Inbox and trueseal-sync's outbox replay when the device reconnects."
 
 > **Operator:** "Can I run multiple relay nodes behind a load balancer?"
 > **Domain expert:** "Yes, as long as they share an Inbox store. Any Node can handle any request — there is no node-local state. A Node can be replaced or fail without losing any accepted Envelopes."
 
 ## Flagged ambiguities
 
-- "push" — overloaded. In hush-sync, Push is a Device sending an Envelope to the relay (via a Push Session). In hush-relay, Delivery is the relay forwarding to a Device. Use Push for the client action, Delivery for the relay action.
-- "server" — avoided in favour of Relay throughout the hush stack to be precise about the zero-knowledge property.
+- "push" — overloaded. In trueseal-sync, Push is a Device sending an Envelope to the relay (via a Push Session). In trueseal-relay, Delivery is the relay forwarding to a Device. Use Push for the client action, Delivery for the relay action.
+- "server" — avoided in favour of Relay throughout the trueseal stack to be precise about the zero-knowledge property.
 - "ephemeral" — overloaded. In Push Session, ephemeral refers to the keypair (generated per session, immediately discarded). In Inbox, ephemeral refers to the data lifetime (held only until delivered). Never use "ephemeral storage" — it implies in-memory, which contradicts the durable-until-delivered requirement.
 - "session" (unqualified) — always specify Receive Session or Push Session. The two have fundamentally different authentication models and lifetimes.

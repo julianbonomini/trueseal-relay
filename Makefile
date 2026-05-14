@@ -1,6 +1,6 @@
-BINARY=hush-relay
-BUILD_DIR=./cmd/hush-relay
-IMAGE=hush-relay:latest
+BINARY=trueseal-relay
+BUILD_DIR=./cmd/trueseal-relay
+IMAGE=trueseal-relay:latest
 
 .PHONY: build test lint clean docker-build docker-up docker-down genkey
 
@@ -28,4 +28,4 @@ docker-down:
 # Generate a relay keypair into ./data/keypair.hex
 genkey:
 	mkdir -p data
-	docker compose run --rm relay /hush-relay -genkey -keyout /data/keypair.hex
+	docker compose run --rm relay /trueseal-relay -genkey -keyout /data/keypair.hex

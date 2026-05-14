@@ -8,7 +8,7 @@ import (
 	"net"
 
 	"github.com/flynn/noise"
-	"github.com/julianbonomini/hush-relay/internal/relay"
+	"github.com/julianbonomini/trueseal-relay/internal/relay"
 )
 
 // AcceptReceive handles an inbound Noise XX Receive Session.

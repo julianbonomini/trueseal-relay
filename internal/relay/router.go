@@ -7,8 +7,8 @@ import (
 	"log"
 	"time"
 
-	"github.com/julianbonomini/hush-relay/internal/notify"
-	"github.com/julianbonomini/hush-relay/internal/store"
+	"github.com/julianbonomini/trueseal-relay/internal/notify"
+	"github.com/julianbonomini/trueseal-relay/internal/store"
 )
 
 // Router implements session.Handler.
@@ -76,7 +76,7 @@ func (r *Router) OnDeliverAck(ctx context.Context, deviceKey RecipientKey, blobI
 //
 // Concurrent Receive Sessions for the same device key (issue #18):
 // The relay allows multiple concurrent Receive Sessions for the same key.
-// hush-sync opens exactly one Receive Session per HushSession and replaces
+// trueseal-sync opens exactly one Receive Session per TruesealSession and replaces
 // it atomically on reconnect, so genuine concurrency is rare (brief overlap
 // during reconnect only). The relay uses Peek (non-destructive); blobs are
 // deleted only after DeliverAck. With concurrent sessions both may deliver the

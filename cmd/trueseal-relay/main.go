@@ -14,13 +14,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/julianbonomini/hush-relay/internal/config"
-	"github.com/julianbonomini/hush-relay/internal/keypair"
-	"github.com/julianbonomini/hush-relay/internal/notify/inprocess"
-	"github.com/julianbonomini/hush-relay/internal/relay"
-	"github.com/julianbonomini/hush-relay/internal/session"
-	sqlitestore "github.com/julianbonomini/hush-relay/internal/store/sqlite"
-	"github.com/julianbonomini/hush-relay/internal/store"
+	"github.com/julianbonomini/trueseal-relay/internal/config"
+	"github.com/julianbonomini/trueseal-relay/internal/keypair"
+	"github.com/julianbonomini/trueseal-relay/internal/notify/inprocess"
+	"github.com/julianbonomini/trueseal-relay/internal/relay"
+	"github.com/julianbonomini/trueseal-relay/internal/session"
+	sqlitestore "github.com/julianbonomini/trueseal-relay/internal/store/sqlite"
+	"github.com/julianbonomini/trueseal-relay/internal/store"
 )
 
 func main() {
@@ -179,7 +179,7 @@ func main() {
 		}
 	}()
 
-	log.Printf("hush-relay running (push=%s receive=%s health=%s)", cfg.Relay.ListenPush, cfg.Relay.ListenReceive, cfg.Relay.ListenHealth)
+	log.Printf("trueseal-relay running (push=%s receive=%s health=%s)", cfg.Relay.ListenPush, cfg.Relay.ListenReceive, cfg.Relay.ListenHealth)
 
 	// Health endpoint — GET /healthz returns 200 OK while the relay is running.
 	// Useful for container health checks and load balancer probes.

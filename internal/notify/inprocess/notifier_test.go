@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/julianbonomini/hush-relay/internal/notify/inprocess"
+	"github.com/julianbonomini/trueseal-relay/internal/notify/inprocess"
 )
 
 func key(b byte) []byte {
