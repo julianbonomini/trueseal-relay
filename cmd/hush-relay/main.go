@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -106,17 +107,40 @@ func main() {
 		receiveLn.Close()
 	}()
 
+	max := cfg.Relay.MaxConnections
+	pushSem := make(chan struct{}, max)
+	recvSem := make(chan struct{}, max)
+	var pushActive, recvActive atomic.Int64
+	watermark := int64(max) * 75 / 100 // warn at 75% capacity
+
 	go func() {
 		for {
 			conn, err := pushLn.Accept()
 			if err != nil {
 				return
 			}
+			select {
+			case pushSem <- struct{}{}:
+			default:
+				log.Printf("push: connection limit reached (%d) — rejecting %s", max, conn.RemoteAddr())
+				conn.Close()
+				continue
+			}
 			wg.Add(1)
 			go func(c net.Conn) {
 				defer wg.Done()
+				defer func() { <-pushSem }()
+				n := pushActive.Add(1)
+				defer pushActive.Add(-1)
+				if n >= watermark {
+					log.Printf("push: active connections at %d/%d (%.0f%% capacity) — consider investigating stalled connections (P2)", n, max, float64(n)/float64(max)*100)
+				}
+				start := time.Now()
 				if err := session.AcceptPush(c, kp.DHKey, router); err != nil {
 					log.Printf("push session: %v", err)
+				}
+				if d := time.Since(start); d > 30*time.Second {
+					log.Printf("push: long-lived session closed  addr=%s  duration=%s  (no read deadline — see P2)", c.RemoteAddr(), d.Round(time.Second))
 				}
 			}(conn)
 		}
@@ -128,11 +152,28 @@ func main() {
 			if err != nil {
 				return
 			}
+			select {
+			case recvSem <- struct{}{}:
+			default:
+				log.Printf("recv: connection limit reached (%d) — rejecting %s", max, conn.RemoteAddr())
+				conn.Close()
+				continue
+			}
 			wg.Add(1)
 			go func(c net.Conn) {
 				defer wg.Done()
+				defer func() { <-recvSem }()
+				n := recvActive.Add(1)
+				defer recvActive.Add(-1)
+				if n >= watermark {
+					log.Printf("recv: active connections at %d/%d (%.0f%% capacity) — consider investigating stalled connections (P2)", n, max, float64(n)/float64(max)*100)
+				}
+				start := time.Now()
 				if err := session.AcceptReceive(c, kp.DHKey, router); err != nil {
 					log.Printf("receive session: %v", err)
+				}
+				if d := time.Since(start); d > 24*time.Hour {
+					log.Printf("recv: very long-lived session closed  duration=%s  (no read deadline — see P2)", d.Round(time.Second))
 				}
 			}(conn)
 		}

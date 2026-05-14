@@ -56,6 +56,7 @@ Configuration is via TOML file or environment variables. Environment variables o
 | `HUSH_RELAY_LISTEN_HEALTH` | `:7702` | HTTP health endpoint (`GET /healthz → 200 OK`) |
 | `HUSH_RELAY_STORE_TYPE` | `sqlite` | Storage adapter: `sqlite` or `postgres` |
 | `HUSH_RELAY_MAX_ENVELOPE_BYTES` | `65482` | Max envelope bytes per Push frame (Noise u16 framing ceiling) |
+| `HUSH_RELAY_MAX_CONNECTIONS` | `1000` | Max concurrent connections per listener (push and receive counted separately) |
 
 ### TOML file
 

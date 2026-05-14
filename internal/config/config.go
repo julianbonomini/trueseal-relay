@@ -40,7 +40,11 @@ type RelayConfig struct {
 	// MaxEnvelopeBytes is the maximum size of the protobuf Envelope bytes
 	// (body[32:] of the Push frame body). Blobs exceeding this limit are rejected
 	// without Ack. See ADR-0008.
-	MaxEnvelopeBytes int64         `toml:"max_envelope_bytes"`
+	MaxEnvelopeBytes int64 `toml:"max_envelope_bytes"`
+	// MaxConnections is the maximum number of concurrent connections per listener
+	// (push and receive counted separately). Connections beyond the cap are
+	// rejected immediately with a log warning. 0 means no limit.
+	MaxConnections int `toml:"max_connections"`
 }
 
 // StoreConfig holds storage adapter settings.
@@ -89,6 +93,9 @@ func setDefaults(cfg *Config) {
 	if cfg.Relay.ListenHealth == "" {
 		cfg.Relay.ListenHealth = ":7702"
 	}
+	if cfg.Relay.MaxConnections <= 0 {
+		cfg.Relay.MaxConnections = 1000
+	}
 	if cfg.Relay.MaxEnvelopeBytes <= 0 {
 		cfg.Relay.MaxEnvelopeBytes = DefaultMaxEnvelopeBytes
 	}
@@ -128,6 +135,14 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.Relay.ReapInterval = d
 		} else {
 			log.Printf("config: ignoring invalid HUSH_RELAY_REAP_INTERVAL %q: %v", v, err)
+		}
+	}
+	if v := os.Getenv("HUSH_RELAY_MAX_CONNECTIONS"); v != "" {
+		var n int
+		if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n > 0 {
+			cfg.Relay.MaxConnections = n
+		} else {
+			log.Printf("config: ignoring invalid HUSH_RELAY_MAX_CONNECTIONS %q", v)
 		}
 	}
 	if v := os.Getenv("HUSH_RELAY_MAX_ENVELOPE_BYTES"); v != "" {
