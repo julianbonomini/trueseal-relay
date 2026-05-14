@@ -1,92 +1,69 @@
 # hush-relay
 
-A zero-knowledge message relay for [hush-sync](https://github.com/julianbonomini/hush-sync). Stores and forwards encrypted blobs between devices without ever learning their contents, sender identity, or group membership.
+Encrypted blob relay for [hush-sync](https://github.com/julianbonomini/hush-sync). Accepts ciphertext from senders, holds it for offline recipients, delivers on reconnect. Routes by recipient public key only — content, sender identity, and group membership are structurally unknowable.
 
-The relay sees one thing: a recipient public key. Everything else is opaque ciphertext.
-
----
-
-## How it works
-
-Two session types over TCP, both Noise-encrypted:
-
-| Port | Session | Protocol | Direction |
-|------|---------|----------|-----------|
-| `7701` | Push | Noise NK | hush-sync → relay (anonymous sender) |
-| `7700` | Receive | Noise XX | device → relay (long-lived, mutual auth) |
-
-**Push path**: hush-sync opens a fresh anonymous NK session, sends one or more blobs with a 32-byte recipient key prefix. Relay stores the blob, sends Ack. Session closes.
-
-**Deliver path**: device holds a long-lived XX session. On connect, inbox is flushed immediately. While connected, new blobs are delivered as they arrive. Relay sends periodic heartbeats to keep NAT alive.
-
-Delivered blobs are deleted immediately. Undelivered blobs are kept until TTL (default 30 days).
+Implements [hush-protocol](https://github.com/julianbonomini/hush-protocol) on the server side.
 
 ---
 
-## Quick start (Docker)
+## Sessions
+
+Two TCP listeners, both Noise-encrypted:
+
+| Port | Noise pattern | Direction | Lifetime |
+|------|--------------|-----------|----------|
+| `7700` | XX — mutual auth | device ↔ relay | long-lived, one per device |
+| `7701` | NK — relay-only auth | hush-sync → relay | short-lived, one per push batch |
+
+NK means the sender is anonymous — the relay cannot link a push session to any device or receive session. XX means both sides authenticate; the relay registers the device's stable public key and delivers its inbox immediately on connect.
+
+---
+
+## Quick start
 
 ```sh
-# Clone and start — keypair is generated automatically on first run
 git clone https://github.com/julianbonomini/hush-relay
 cd hush-relay
 docker compose up -d
 
-# Check the relay public key (share this with your clients)
+# Print the relay public key — distribute this to your clients
 docker compose logs relay | grep "relay public key"
 ```
 
-That's it. The relay is running on ports `7700` (receive) and `7701` (push).
-
-Data is persisted in a named Docker volume (`relay-data`). The keypair is generated once and stored at `/data/keypair.hex` inside the volume.
+Keypair is generated on first run and stored in the `relay-data` Docker volume. Inbox data persists there too.
 
 ---
 
 ## Configuration
 
-Configuration is via TOML file or environment variables. Environment variables override the TOML file. If no config file is found, env vars are used exclusively (useful for Docker).
+Env vars (used in Docker) or TOML file (pass with `-config`). Env vars override TOML.
 
-### Environment variables
+| Variable | Default | |
+|----------|---------|--|
+| `HUSH_RELAY_KEYPAIR_PATH` | — | **Required** |
+| `HUSH_RELAY_STORE_SQLITE_PATH` | — | **Required** (SQLite) |
+| `HUSH_RELAY_LISTEN_RECEIVE` | `:7700` | |
+| `HUSH_RELAY_LISTEN_PUSH` | `:7701` | |
+| `HUSH_RELAY_LISTEN_HEALTH` | `:7702` | `GET /healthz → 200 ok` |
+| `HUSH_RELAY_STORE_TYPE` | `sqlite` | `sqlite` or `postgres` |
+| `HUSH_RELAY_TTL` | `720h` | undelivered blob retention |
+| `HUSH_RELAY_REAP_INTERVAL` | `1h` | |
+| `HUSH_RELAY_MAX_CONNECTIONS` | `1000` | per listener; excess connections rejected |
+| `HUSH_RELAY_MAX_ENVELOPE_BYTES` | `65482` | Noise u16 framing ceiling |
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `HUSH_RELAY_KEYPAIR_PATH` | — | **Required.** Path to hex-encoded X25519 private key |
-| `HUSH_RELAY_STORE_SQLITE_PATH` | — | **Required** (SQLite). Path to SQLite database file |
-| `HUSH_RELAY_LISTEN_RECEIVE` | `:7700` | XX receive session listener |
-| `HUSH_RELAY_LISTEN_PUSH` | `:7701` | NK push session listener |
-| `HUSH_RELAY_LISTEN_HEALTH` | `:7702` | HTTP health endpoint (`GET /healthz → 200 OK`) |
-| `HUSH_RELAY_STORE_TYPE` | `sqlite` | Storage adapter: `sqlite` or `postgres` |
-| `HUSH_RELAY_MAX_ENVELOPE_BYTES` | `65482` | Max envelope bytes per Push frame (Noise u16 framing ceiling) |
-| `HUSH_RELAY_MAX_CONNECTIONS` | `1000` | Max concurrent connections per listener (push and receive counted separately) |
+Full annotated example: [`config/relay.toml`](config/relay.toml).
 
-### TOML file
-
-```toml
-[relay]
-keypair_path   = "/data/keypair.hex"
-listen_push    = ":7701"
-listen_receive = ":7700"
-listen_health  = ":7702"             # GET /healthz → 200 OK
-ttl            = "720h"        # envelope TTL (default: 30 days)
-reap_interval  = "1h"          # how often expired envelopes are reaped
-
-[store]
-type        = "sqlite"
-sqlite_path = "/data/inbox.db"
-```
-
-Run with a config file:
+To use a config file instead of env vars:
 
 ```sh
 hush-relay -config /path/to/relay.toml
 ```
 
-A sample config is provided at [`config/relay.toml`](config/relay.toml).
-
 ---
 
-## Keypair management
+## Keypair
 
-The relay's X25519 keypair authenticates it to devices (Noise NK/XX). Generate once:
+The relay's X25519 keypair is used in both Noise handshakes. Devices verify it before exchanging any data — distribute the public key to clients out-of-band. Generate once at deployment setup:
 
 ```sh
 # Docker
@@ -96,47 +73,32 @@ docker compose run --rm relay /hush-relay -genkey -keyout /data/keypair.hex
 ./hush-relay -genkey -keyout keypair.hex
 ```
 
-The public key is printed during generation — share it with your clients.
-
-**Keep the private key secret.** It lives in the Docker volume and is never baked into the image.
+The public key is printed on generation. The private key lives in the Docker volume and is never baked into the image.
 
 ---
 
-## Building from source
+## Building
 
-Requires Go 1.26+. Pure Go — no CGO, no external C dependencies.
+Go 1.26+. Pure Go — no CGo, no external C dependencies.
 
 ```sh
-# Build binary
-make build
-
-# Run tests
+make build        # → ./hush-relay
 make test
-
-# Build Docker image
 make docker-build
 ```
 
 ---
 
-## Deployment
+## Clustering
 
-### Single node (SQLite)
-
-```sh
-docker compose up -d
-```
-
-### Cluster (Postgres) — coming in #9
-
-Multiple relay nodes sharing a Postgres inbox. Any node handles any request. No sticky sessions required. Invisible to hush-sync and devices.
+Default deployment is single-node SQLite. A Postgres backend for multi-node clustering (shared inbox, no sticky sessions) is tracked in [#9](https://github.com/julianbonomini/hush-relay/issues/9).
 
 ---
 
-## Security model
+## Design
 
-- **Blind by design**: recipient public key is unavoidable (it is the address). Sender identity, group membership, and blob contents are structurally unknowable — not policy-withheld.
-- **Durable until delivered**: an accepted blob is never lost before delivery. WAL + `synchronous=FULL` on SQLite. Ack is sent only after the blob is persisted.
-- **No relay is irreplaceable**: any instance can fail or be replaced. The security model does not change.
+- **Blind** — content, sender identity, group membership are structurally unknowable, not policy-withheld
+- **Durable until delivered** — accepted blobs survive crashes (WAL + `synchronous=FULL`); Ack sent only after persistence
+- **Replaceable** — no specific instance is load-bearing; swap or scale without changing the security model
 
-See [MANIFESTO.md](MANIFESTO.md) for the full design intent.
+→ [MANIFESTO.md](MANIFESTO.md) · [hush-protocol wire spec](https://github.com/julianbonomini/hush-protocol)
