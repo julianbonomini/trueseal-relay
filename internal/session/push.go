@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"io"
+	"log"
 	"net"
 
 	"github.com/flynn/noise"
@@ -44,6 +45,8 @@ func AcceptPush(conn net.Conn, relayKey noise.DHKey, handler Handler) error {
 	if err := writeNoiseMsg(conn, resp); err != nil {
 		return formatErr("push: send resp", err)
 	}
+	log.Printf("push: NK handshake complete  addr=%s  (anonymous sender)", conn.RemoteAddr())
+	defer log.Printf("push: session closed  addr=%s", conn.RemoteAddr())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

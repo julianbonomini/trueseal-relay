@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"net"
 
 	"github.com/flynn/noise"
@@ -65,6 +66,8 @@ func AcceptReceive(conn net.Conn, relayKey noise.DHKey, handler Handler) error {
 	// Extract device's static public key
 	var deviceKey relay.RecipientKey
 	copy(deviceKey[:], hs.PeerStatic())
+	log.Printf("recv: XX handshake complete  addr=%s  key=%x", conn.RemoteAddr(), deviceKey[:4])
+	defer log.Printf("recv: device disconnected  key=%x", deviceKey[:4])
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

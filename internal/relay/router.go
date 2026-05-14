@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/julianbonomini/hush-relay/internal/notify"
@@ -53,6 +54,7 @@ func (r *Router) OnPush(ctx context.Context, body []byte) error {
 		return fmt.Errorf("relay: envelope too large: %d bytes (limit %d)", len(envelope), r.maxEnvelopeBytes)
 	}
 
+	log.Printf("push: recipient=%x  envelope=%d bytes", key[:4], len(envelope))
 	if err := r.store.Put(ctx, key[:], envelope, r.ttl); err != nil {
 		return err
 	}
@@ -62,7 +64,8 @@ func (r *Router) OnPush(ctx context.Context, body []byte) error {
 
 // OnDeliverAck implements session.Handler.
 // Deletes the blob identified by blobID from the InboxStore. See ADR-0009.
-func (r *Router) OnDeliverAck(ctx context.Context, _ RecipientKey, blobID int64) error {
+func (r *Router) OnDeliverAck(ctx context.Context, deviceKey RecipientKey, blobID int64) error {
+	log.Printf("ack:  device=%x  blob_id=%d  (deleted)", deviceKey[:4], blobID)
 	return r.store.DeleteByIDs(ctx, []int64{blobID})
 }
 
@@ -80,7 +83,7 @@ func (r *Router) OnDeliverAck(ctx context.Context, _ RecipientKey, blobID int64)
 // session wins the race; the other gets an empty result. This behaviour is
 // tested in TestRouter_TwoConcurrentReceiveSessions_NoDoubleDelivery.
 func (r *Router) OnReceiveConnect(ctx context.Context, deviceKey RecipientKey) <-chan DeliveryBlob {
-	// deliverCh buffers up to 256 blobs between the delivery goroutine and
+	log.Printf("recv: device connected  key=%x", deviceKey[:4])	// deliverCh buffers up to 256 blobs between the delivery goroutine and
 	// the session write loop. 256 is a practical upper bound for a single peek
 	// burst — large enough to absorb a full inbox drain without blocking the
 	// goroutine, small enough that backpressure kicks in before memory grows
