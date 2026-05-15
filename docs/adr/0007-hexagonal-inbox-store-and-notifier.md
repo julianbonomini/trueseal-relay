@@ -3,15 +3,20 @@
 The relay core is isolated from infrastructure via two ports (Go interfaces). Adapters implement the ports. The running configuration is selected at startup via config — the core never changes.
 
 **Port 1 — InboxStore**
-Pure durable storage. Responsible for: accepting blobs into an inbox, atomically flushing and deleting all blobs for a recipient on delivery, and reaping blobs whose TTL has elapsed.
+Pure durable storage. Responsible for: accepting blobs into an inbox, non-destructively reading blobs for delivery, deleting blobs by ID after DeliverAck, and reaping blobs whose TTL has elapsed.
+
+Blobs are deleted only after the recipient Device sends a DeliverAck — not on read. This is ack-gated deletion (ADR-0009). `Peek` is non-destructive; `DeleteByIDs` is called by the router after each DeliverAck.
 
 ```go
 type InboxStore interface {
-    Put(ctx context.Context, recipientKey []byte, env []byte, ttl time.Duration) error
-    Flush(ctx context.Context, recipientKey []byte) ([][]byte, error) // atomic fetch+delete
+    Put(ctx context.Context, recipientKey []byte, envelope []byte, ttl time.Duration) error
+    Peek(ctx context.Context, recipientKey []byte) ([]InboxBlob, error) // non-destructive
+    DeleteByIDs(ctx context.Context, ids []int64) error
     Reap(ctx context.Context) error
 }
 ```
+
+Note: an earlier version of this interface used `Flush` (atomic fetch+delete). That was superseded by ADR-0009, which introduced ack-gated deletion. `Flush` no longer exists in the port.
 
 **Port 2 — Notifier**
 Cross-node delivery notification. When a blob arrives at Node B for a recipient whose Receive Session is on Node A, Node B notifies Node A to deliver immediately. Single-node deployments use an in-process notifier with zero overhead.

@@ -75,52 +75,6 @@ func (s *Store) Put(ctx context.Context, recipientKey []byte, envelope []byte, t
 	return nil
 }
 
-// Flush atomically fetches and deletes all envelopes for recipientKey.
-// Returns envelopes in insertion order (FIFO). The fetch and delete are
-// a single IMMEDIATE transaction — no envelope is returned twice.
-func (s *Store) Flush(ctx context.Context, recipientKey []byte) ([][]byte, error) {
-	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
-	if err != nil {
-		return nil, fmt.Errorf("sqlite: flush begin: %w", err)
-	}
-	defer tx.Rollback() //nolint:errcheck
-
-	rows, err := tx.QueryContext(ctx,
-		`SELECT envelope FROM inbox WHERE recipient = ? ORDER BY id ASC`,
-		recipientKey,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("sqlite: flush select: %w", err)
-	}
-
-	var envelopes [][]byte
-	for rows.Next() {
-		var env []byte
-		if err := rows.Scan(&env); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("sqlite: flush scan: %w", err)
-		}
-		envelopes = append(envelopes, env)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("sqlite: flush rows: %w", err)
-	}
-
-	if _, err := tx.ExecContext(ctx,
-		`DELETE FROM inbox WHERE recipient = ?`,
-		recipientKey,
-	); err != nil {
-		return nil, fmt.Errorf("sqlite: flush delete: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("sqlite: flush commit: %w", err)
-	}
-
-	return envelopes, nil
-}
-
 // Peek fetches all envelopes for recipientKey without deleting them.
 // Returns InboxBlob values in insertion order (FIFO).
 func (s *Store) Peek(ctx context.Context, recipientKey []byte) ([]store.InboxBlob, error) {

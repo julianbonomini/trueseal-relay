@@ -35,8 +35,12 @@ The act of deleting an Envelope whose TTL has elapsed without Delivery. Performe
 _Avoid_: purge, eviction, expiry, cleanup
 
 **Node**:
-A single running instance of the trueseal-relay binary. Multiple Nodes may be deployed as a cluster, sharing a common Inbox store. Any Node can fail or be replaced without affecting the security model or losing accepted Envelopes. No Node holds state that is not shared.
+A single running instance of the trueseal-relay binary. Multiple Nodes may be deployed as a Cluster, sharing a common Inbox store. Any Node can fail or be replaced without affecting the security model or losing accepted Envelopes. No Node holds state that is not shared.
 _Avoid_: server, instance, replica
+
+**Cluster**:
+Two or more Nodes sharing a common external Inbox store (Postgres). Any Node handles any Push Session or Receive Session — there is no affinity between a Device and a specific Node. A Node that crashes is restarted by the process manager; Devices reconnect to any healthy Node and the initial Inbox drain on reconnect recovers any pending Envelopes.
+_Avoid_: fleet, pool, farm
 
 **Operator**:
 The person or organisation deploying trueseal-relay. Responsible for: generating and safeguarding the relay Keypair, distributing the relay public key to Device operators, and configuring TTL and blob size limits. trueseal-relay makes no assumptions about who the operator is — a relay run by a trusted friend and a relay run by an adversary provide identical security guarantees to end users. Deployment is self-contained: a single binary or docker compose, no external dependencies required for a single-Node deployment.

@@ -45,7 +45,7 @@ func TestReaper_SurvivesUnexpired(t *testing.T) {
 	cancel()
 	<-done
 
-	got, _ := s.Flush(ctx, key(0xAA))
+	got, _ := s.Peek(ctx, key(0xAA))
 	if len(got) != 1 {
 		t.Errorf("want 1 unexpired envelope, got %d", len(got))
 	}
@@ -93,7 +93,6 @@ type errorStore struct{}
 func (e *errorStore) Put(_ context.Context, _ []byte, _ []byte, _ time.Duration) error {
 	return nil
 }
-func (e *errorStore) Flush(_ context.Context, _ []byte) ([][]byte, error)  { return nil, nil }
 func (e *errorStore) Peek(_ context.Context, _ []byte) ([]store.InboxBlob, error) {
 	return nil, nil
 }
@@ -118,7 +117,7 @@ func TestReaper_ReapsExpired(t *testing.T) {
 	cancel()
 	<-done
 
-	got, _ := s.Flush(ctx, key(0xAA))
+	got, _ := s.Peek(ctx, key(0xAA))
 	if len(got) != 0 {
 		t.Errorf("want 0 envelopes after reap, got %d", len(got))
 	}
