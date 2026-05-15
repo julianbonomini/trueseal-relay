@@ -1,0 +1,42 @@
+# Caddyfile for trueseal-relay clustered deployment.
+# Layer-4 TCP load balancing — no TLS termination (Noise protocol handles
+# encryption end-to-end between devices and the relay).
+
+{
+  # Disable the default HTTPS redirect — this is a raw TCP proxy.
+  auto_https off
+  admin off
+}
+
+# Receive sessions (Noise XX) — devices → relay
+:7700 {
+  route {
+    proxy {
+      upstream relay-1:7700
+      upstream relay-2:7700
+      lb_policy round_robin
+      health_interval 10s
+    }
+  }
+}
+
+# Push sessions (Noise NK) — trueseal-sync → relay
+:7701 {
+  route {
+    proxy {
+      upstream relay-1:7701
+      upstream relay-2:7701
+      lb_policy round_robin
+      health_interval 10s
+    }
+  }
+}
+
+# Health endpoint — proxy to relay-1 (any healthy Node will do)
+:7702 {
+  reverse_proxy relay-1:7702 relay-2:7702 {
+    lb_policy first
+    health_uri /healthz
+    health_interval 10s
+  }
+}

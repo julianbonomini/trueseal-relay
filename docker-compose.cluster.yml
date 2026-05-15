@@ -1,0 +1,97 @@
+# trueseal-relay — Clustered deployment (Postgres)
+#
+# Two relay Nodes sharing one Postgres inbox store. A Caddy load balancer
+# distributes Push and Receive connections across both Nodes.
+#
+# Scale horizontally by adding more relay-N service entries and adding them
+# to the Caddy upstream blocks below. All Nodes must share the same Postgres
+# instance. See ADR-0010 for the clustering design.
+#
+# Usage:
+#   docker compose -f docker-compose.cluster.yml up -d
+#
+# The relay public key is printed on first start. Share it with your clients.
+# Both Nodes generate the same keypair from the same /data/keypair.hex file
+# (mounted from a shared volume). Generate once:
+#   docker compose -f docker-compose.cluster.yml run --rm relay-1 \
+#     /trueseal-relay -genkey -keyout /data/keypair.hex
+#
+# IMPORTANT: Replace POSTGRES_PASSWORD and the DSN password below with a
+# strong secret before deploying.
+
+services:
+
+  # ── Postgres inbox store ───────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: relay
+      POSTGRES_PASSWORD: changeme
+      POSTGRES_DB: trueseal
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U relay -d trueseal"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── Relay Node 1 ───────────────────────────────────────────────────────────
+  relay-1:
+    build: .
+    image: trueseal-relay:latest
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - relay-data:/data
+    environment:
+      TRUESEAL_RELAY_KEYPAIR_PATH: /data/keypair.hex
+      TRUESEAL_RELAY_STORE_TYPE: postgres
+      TRUESEAL_RELAY_STORE_POSTGRES_DSN: "postgres://relay:changeme@db:5432/trueseal?sslmode=disable"
+      # TRUESEAL_RELAY_TTL: "720h"
+      # TRUESEAL_RELAY_REAP_INTERVAL: "1h"
+    command: ["-no-config"]
+
+  # ── Relay Node 2 ───────────────────────────────────────────────────────────
+  relay-2:
+    build: .
+    image: trueseal-relay:latest
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - relay-data:/data
+    environment:
+      TRUESEAL_RELAY_KEYPAIR_PATH: /data/keypair.hex
+      TRUESEAL_RELAY_STORE_TYPE: postgres
+      TRUESEAL_RELAY_STORE_POSTGRES_DSN: "postgres://relay:changeme@db:5432/trueseal?sslmode=disable"
+      # TRUESEAL_RELAY_TTL: "720h"
+      # TRUESEAL_RELAY_REAP_INTERVAL: "1h"
+    command: ["-no-config"]
+
+  # ── Load balancer ──────────────────────────────────────────────────────────
+  # Caddy as a Layer-4 TCP load balancer distributing Push and Receive
+  # connections across relay Nodes. Devices connect to the balancer —
+  # any Node handles any session.
+  lb:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - relay-1
+      - relay-2
+    ports:
+      - "7700:7700"   # Receive sessions (Noise XX) — devices
+      - "7701:7701"   # Push sessions (Noise NK) — trueseal-sync
+      - "7702:7702"   # Health endpoint (proxied to relay-1)
+    volumes:
+      - ./docker/Caddyfile.cluster:/etc/caddy/Caddyfile:ro
+
+volumes:
+  postgres-data:
+    driver: local
+  relay-data:
+    driver: local
