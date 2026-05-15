@@ -1,27 +1,23 @@
-# trueseal-relay — Clustered deployment (Postgres)
+# trueseal-relay -- Clustered deployment (Postgres)
 #
-# Two relay Nodes sharing one Postgres inbox store. A Caddy load balancer
+# Two relay Nodes sharing one Postgres inbox store. An HAProxy load balancer
 # distributes Push and Receive connections across both Nodes.
 #
-# Scale horizontally by adding more relay-N service entries and adding them
-# to the Caddy upstream blocks below. All Nodes must share the same Postgres
-# instance. See ADR-0010 for the clustering design.
-#
 # Usage:
-#   docker compose -f docker-compose.cluster.yml up -d
+#   1. Start Postgres:
+#        docker-compose -f docker-compose.cluster.yml up -d db
+#   2. Generate keypair once:
+#        docker-compose -f docker-compose.cluster.yml run --rm relay-1 \
+#          /trueseal-relay -genkey -keyout /data/keypair.hex
+#   3. Start everything:
+#        docker-compose -f docker-compose.cluster.yml up -d
 #
-# The relay public key is printed on first start. Share it with your clients.
-# Both Nodes generate the same keypair from the same /data/keypair.hex file
-# (mounted from a shared volume). Generate once:
-#   docker compose -f docker-compose.cluster.yml run --rm relay-1 \
-#     /trueseal-relay -genkey -keyout /data/keypair.hex
-#
-# IMPORTANT: Replace POSTGRES_PASSWORD and the DSN password below with a
-# strong secret before deploying.
+# IMPORTANT: Replace POSTGRES_PASSWORD and the DSN password with a strong
+# secret before deploying.
 
 services:
 
-  # ── Postgres inbox store ───────────────────────────────────────────────────
+  # -- Postgres inbox store --------------------------------------------------
   db:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -37,7 +33,7 @@ services:
       timeout: 3s
       retries: 10
 
-  # ── Relay Node 1 ───────────────────────────────────────────────────────────
+  # -- Relay Node 1 ----------------------------------------------------------
   relay-1:
     build: .
     image: trueseal-relay:latest
@@ -55,7 +51,7 @@ services:
       # TRUESEAL_RELAY_REAP_INTERVAL: "1h"
     command: ["-no-config"]
 
-  # ── Relay Node 2 ───────────────────────────────────────────────────────────
+  # -- Relay Node 2 ----------------------------------------------------------
   relay-2:
     build: .
     image: trueseal-relay:latest
@@ -73,22 +69,22 @@ services:
       # TRUESEAL_RELAY_REAP_INTERVAL: "1h"
     command: ["-no-config"]
 
-  # ── Load balancer ──────────────────────────────────────────────────────────
-  # Caddy as a Layer-4 TCP load balancer distributing Push and Receive
-  # connections across relay Nodes. Devices connect to the balancer —
-  # any Node handles any session.
+  # -- Load balancer ---------------------------------------------------------
+  # HAProxy in TCP mode. The relay uses raw Noise-over-TCP -- standard HTTP
+  # proxies cannot handle this. HAProxy's TCP mode is transparent to the
+  # Noise handshake.
   lb:
-    image: caddy:2-alpine
+    image: haproxy:3-alpine
     restart: unless-stopped
     depends_on:
       - relay-1
       - relay-2
     ports:
-      - "7700:7700"   # Receive sessions (Noise XX) — devices
-      - "7701:7701"   # Push sessions (Noise NK) — trueseal-sync
-      - "7702:7702"   # Health endpoint (proxied to relay-1)
+      - "7700:7700"   # Receive sessions (Noise XX) -- devices
+      - "7701:7701"   # Push sessions (Noise NK) -- trueseal-sync
+      - "7702:7702"   # Health endpoint (HTTP, proxied to relay nodes)
     volumes:
-      - ./docker/Caddyfile.cluster:/etc/caddy/Caddyfile:ro
+      - ./docker/haproxy.cluster.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
 
 volumes:
   postgres-data:
