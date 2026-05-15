@@ -74,7 +74,7 @@ services:
   # proxies cannot handle this. HAProxy's TCP mode is transparent to the
   # Noise handshake.
   lb:
-    image: haproxy:3-alpine
+    image: haproxy:alpine
     restart: unless-stopped
     depends_on:
       - relay-1
