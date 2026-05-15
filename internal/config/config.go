@@ -49,8 +49,9 @@ type RelayConfig struct {
 
 // StoreConfig holds storage adapter settings.
 type StoreConfig struct {
-	Type       string `toml:"type"`
-	SQLitePath string `toml:"sqlite_path"`
+	Type        string `toml:"type"`
+	SQLitePath  string `toml:"sqlite_path"`
+	PostgresDSN string `toml:"postgres_dsn"`
 }
 
 // Load reads the TOML config at path, applies env var overrides, and
@@ -123,6 +124,9 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("TRUESEAL_RELAY_STORE_SQLITE_PATH"); v != "" {
 		cfg.Store.SQLitePath = v
 	}
+	if v := os.Getenv("TRUESEAL_RELAY_STORE_POSTGRES_DSN"); v != "" {
+		cfg.Store.PostgresDSN = v
+	}
 	if v := os.Getenv("TRUESEAL_RELAY_TTL"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.Relay.TTL = d
@@ -161,6 +165,9 @@ func validate(cfg *Config) error {
 	}
 	if cfg.Store.Type == "sqlite" && cfg.Store.SQLitePath == "" {
 		return fmt.Errorf("config: store.sqlite_path is required when store.type = sqlite")
+	}
+	if cfg.Store.Type == "postgres" && cfg.Store.PostgresDSN == "" {
+		return fmt.Errorf("config: store.postgres_dsn is required when store.type = postgres (or set TRUESEAL_RELAY_STORE_POSTGRES_DSN)")
 	}
 	if cfg.Store.Type != "sqlite" && cfg.Store.Type != "postgres" {
 		return fmt.Errorf("config: store.type must be sqlite or postgres, got %q", cfg.Store.Type)
