@@ -1,0 +1,42 @@
+# trueseal-relay -- Single node + Postgres (experiment)
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: relay
+      POSTGRES_PASSWORD: changeme
+      POSTGRES_DB: trueseal
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U relay -d trueseal"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  relay-1:
+    build: .
+    image: trueseal-relay:latest
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "7700:7700"
+      - "7701:7701"
+      - "7702:7702"
+    volumes:
+      - relay-data:/data
+    environment:
+      TRUESEAL_RELAY_KEYPAIR_PATH: /data/keypair.hex
+      TRUESEAL_RELAY_STORE_TYPE: postgres
+      TRUESEAL_RELAY_STORE_POSTGRES_DSN: "postgres://relay:changeme@db:5432/trueseal?sslmode=disable"
+    command: ["-no-config"]
+
+volumes:
+  postgres-data:
+    driver: local
+  relay-data:
+    driver: local
