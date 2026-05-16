@@ -39,7 +39,7 @@ A single running instance of the trueseal-relay binary. Multiple Nodes may be de
 _Avoid_: server, instance, replica
 
 **Operator**:
-The person or organisation deploying trueseal-relay. Responsible for: generating and safeguarding the relay Keypair, distributing the relay public key to Device operators, and configuring TTL and blob size limits. trueseal-relay makes no assumptions about who the operator is — a relay run by a trusted friend and a relay run by an adversary provide identical security guarantees to end users. Deployment is self-contained: a single binary or docker compose, no external dependencies required for a single-Node deployment.
+The person or organisation deploying trueseal-relay. Responsible for: generating and safeguarding the relay Keypair, distributing the relay public key to Device operators, and configuring TTL and blob size limits. trueseal-relay makes no assumptions about who the operator is — a relay run by a trusted friend and a relay run by an adversary provide identical security guarantees to end users. Deployment is self-contained: a single binary or docker compose, no external dependencies required for a single-Node deployment. Operators are expected to expose relay logs publicly — this is a trust signal, not a liability, because the relay is blind: logs contain no IP addresses, no sender identity, no content.
 _Avoid_: admin, owner, host
 
 ## Relationships
@@ -68,6 +68,9 @@ _Avoid_: admin, owner, host
 
 > **Operator:** "Can I run multiple relay nodes behind a load balancer?"
 > **Domain expert:** "Yes, as long as they share an Inbox store. Any Node can handle any request — there is no node-local state. A Node can be replaced or fail without losing any accepted Envelopes."
+
+> **User:** "How do I know you're not logging who sends what through your relay?"
+> **Operator:** "Check the public logs at logs.yourdomain.com. The relay emits no IP addresses, no sender identities, no content — only connection counts, delivery events, and errors. If you see anything else, it's a bug."
 
 ## Flagged ambiguities
 

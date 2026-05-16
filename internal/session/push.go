@@ -45,8 +45,8 @@ func AcceptPush(conn net.Conn, relayKey noise.DHKey, handler Handler) error {
 	if err := writeNoiseMsg(conn, resp); err != nil {
 		return formatErr("push: send resp", err)
 	}
-	log.Printf("push: NK handshake complete  addr=%s  (anonymous sender)", conn.RemoteAddr())
-	defer log.Printf("push: session closed  addr=%s", conn.RemoteAddr())
+	log.Printf("push: NK handshake complete  (anonymous sender)")
+	defer log.Printf("push: session closed")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -1,0 +1,13 @@
+# Caddyfile
+# Caddy auto-obtains and renews TLS certificates via Let's Encrypt.
+# Set RELAY_DOMAIN and LOGS_DOMAIN in your .env before running.
+
+# Health endpoint — relay internal status
+{$RELAY_DOMAIN} {
+	reverse_proxy relay:7702
+}
+
+# Public log viewer — Dozzle (read-only, no auth by design)
+{$LOGS_DOMAIN} {
+	reverse_proxy dozzle:8080
+}
