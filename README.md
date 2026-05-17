@@ -21,54 +21,105 @@ NK means the sender is anonymous — the relay cannot link a push session to any
 
 ## Deploying
 
-### Prerequisites
+Two compose files — pick one:
 
-- A VPS with Docker + Docker Compose installed
-- Two DNS A records pointing to the VPS IP **(Cloudflare: grey cloud / DNS-only — raw TCP ports 7700/7701 cannot be proxied)**:
-  - `relay.yourdomain.com` — health endpoint (HTTPS via Caddy)
-  - `logs.yourdomain.com` — public log viewer (Dozzle)
-- Ports open on VPS: `80`, `443`, `7700`, `7701`
+| File | Store | Nodes | Use when |
+|------|-------|-------|----------|
+| `docker-compose.yml` | SQLite | 1 | default, single VPS |
+| `docker-compose.cluster.yml` | Postgres | 2+ | you need horizontal scale |
 
-### First run
+Both include Dozzle (public log viewer) and Caddy (HTTPS). Caddy only starts in the `production` profile — locally services are reachable directly on `localhost`.
 
+---
+
+### Local (no domain, no TLS)
+
+**Single node:**
 ```sh
-# 1. Get the compose file and example env
+cp .env.example .env   # fill in keypair if you have one; domains don't matter locally
+docker compose up
+# relay:  localhost:7700 / 7701
+# health: localhost:7702
+# logs:   localhost:8080
+```
+
+**Cluster:**
+```sh
+docker compose -f docker-compose.cluster.yml build --no-cache
+docker compose -f docker-compose.cluster.yml up
+# relay (via HAProxy): localhost:7700 / 7701
+# health (via HAProxy): localhost:7702
+# logs:  localhost:8080
+```
+
+---
+
+### Production (VPS + domain + TLS)
+
+**Prerequisites:**
+- VPS with Docker + Docker Compose
+- Two DNS A records → VPS IP **(Cloudflare: grey cloud / DNS-only — raw TCP ports 7700/7701 cannot be proxied)**:
+  - `relay.yourdomain.com` — health endpoint (HTTPS via Caddy)
+  - `logs.yourdomain.com` — public log viewer (HTTPS via Caddy)
+- Ports open: `80`, `443`, `7700`, `7701`
+
+**Single node:**
+```sh
+# 1. Grab compose file + env template
 curl -fsSL https://github.com/julianbonomini/trueseal-relay/releases/latest/download/docker-compose.yml -o docker-compose.yml
+curl -fsSL https://github.com/julianbonomini/trueseal-relay/releases/latest/download/Caddyfile -o Caddyfile
 curl -fsSL https://github.com/julianbonomini/trueseal-relay/releases/latest/download/.env.example -o .env
 
-# 2. Fill in your two domain names
-#    RELAY_DOMAIN=relay.yourdomain.com
-#    LOGS_DOMAIN=logs.yourdomain.com
+# 2. Fill in RELAY_DOMAIN and LOGS_DOMAIN
 $EDITOR .env
 
-# 3. Start — keypair auto-generates on first boot
-docker compose up -d
+# 3. Start with Caddy
+docker compose --profile production up -d
 
-# 4. Get the relay public key — distribute this to your clients
+# 4. Get the relay public key — distribute to clients
 docker compose logs relay | grep "public key"
+```
+
+**Cluster:**
+```sh
+curl -fsSL https://github.com/julianbonomini/trueseal-relay/releases/latest/download/docker-compose.cluster.yml -o docker-compose.cluster.yml
+curl -fsSL https://github.com/julianbonomini/trueseal-relay/releases/latest/download/Caddyfile -o Caddyfile
+curl -fsSL https://github.com/julianbonomini/trueseal-relay/releases/latest/download/docker/haproxy.cluster.cfg -o docker/haproxy.cluster.cfg
+curl -fsSL https://github.com/julianbonomini/trueseal-relay/releases/latest/download/.env.example -o .env
+
+# Set HEALTH_UPSTREAM=lb:7702 and your domains in .env
+$EDITOR .env
+
+docker compose -f docker-compose.cluster.yml --profile production up -d
 ```
 
 Caddy fetches a Let's Encrypt TLS certificate automatically on first boot.
 
+---
+
 ### Keypair
 
-A keypair is generated on first run and stored in the `relay-data` Docker volume. To bring your own (e.g. to restore a known public key after redeployment):
+Auto-generated on first run, stored in the `relay-data` Docker volume. To bring your own:
 
 ```sh
-# Generate a keypair and print the hex
+# Generate and print hex
 docker compose run --rm relay /trueseal-relay -genkey
 
-# Set it in .env
+# Set in .env
 TRUESEAL_RELAY_KEYPAIR_HEX=your_hex_key_here
 ```
 
+---
+
 ### Public logs
 
-The relay exposes all logs publicly at `https://logs.yourdomain.com` (Dozzle). This is intentional — logs contain no IP addresses, no sender identities, no content. Anyone can audit that the relay is behaving as promised.
+All relay logs are publicly readable at `https://logs.yourdomain.com` (Dozzle). This is intentional — logs contain no IP addresses, no sender identities, no content. Anyone can audit that the relay is blind.
+
+---
 
 ### Automatic deploys
 
-New releases are deployed automatically via GitHub Actions on each `v*.*.*` tag. The VPS needs three GitHub secrets:
+New releases deploy automatically on each `v*.*.*` git tag via GitHub Actions. Three secrets required in your fork:
 
 | Secret | Value |
 |--------|-------|
@@ -78,24 +129,17 @@ New releases are deployed automatically via GitHub Actions on each `v*.*.*` tag.
 
 Add the public half to `~/.ssh/authorized_keys` on the VPS.
 
+---
+
 ### Clustered (Postgres)
 
-Multiple Nodes sharing one Postgres inbox store. Any Node handles any Push or Receive Session — no sticky sessions, no Node is load-bearing. A Caddy load balancer distributes connections.
+Two relay Nodes sharing one Postgres inbox store. HAProxy load-balances raw TCP (ports 7700/7701) across Nodes. Caddy handles HTTPS for health and logs. Any Node handles any Push or Receive Session — no sticky sessions, no Node is load-bearing.
 
-```sh
-# Generate a keypair once (shared across all Nodes via the relay-data volume)
-docker compose -f docker-compose.cluster.yml run --rm relay-1 \
-  /trueseal-relay -genkey -keyout /data/keypair.hex
+**Cross-node delivery:** when a Push Session lands on Node B for a device whose Receive Session is on Node A, Node B stores the blob in Postgres and sends a `NOTIFY`. Node A is `LISTEN`ing — it wakes up immediately and delivers. No polling, no delay.
 
-# Start: two relay Nodes + Postgres + Caddy load balancer
-docker compose -f docker-compose.cluster.yml up -d
-```
+**Node restart:** devices reconnect to any healthy Node; the initial inbox drain on reconnect recovers pending blobs. No data is lost.
 
 Edit `docker-compose.cluster.yml` to change the Postgres password and add more Node entries as needed.
-
-**Cross-node delivery:** when a Push Session lands on Node B for a device whose Receive Session is on Node A, Node B stores the blob in Postgres and sends a `NOTIFY`. Node A is `LISTEN`ing on the recipient's channel — it wakes up immediately and delivers the blob. No polling, no delay.
-
-**Node restart:** if a Node crashes (including listener connection loss — see ADR-0010), it restarts automatically. Devices reconnect to any healthy Node; the initial Inbox drain on reconnect recovers any pending blobs. No data is lost.
 
 ---
 
@@ -114,11 +158,14 @@ Inbox blobs are ephemeral by design — TTL is 30 days by default, but in practi
 
 ## Configuration
 
+### Relay env vars
+
 Env vars (used in Docker) or TOML file (pass with `-config`). Env vars override TOML.
 
 | Variable | Default | |
 |----------|---------|--|
 | `TRUESEAL_RELAY_KEYPAIR_PATH` | — | **Required** |
+| `TRUESEAL_RELAY_KEYPAIR_HEX` | — | Optional. Supply hex key directly instead of file |
 | `TRUESEAL_RELAY_STORE_TYPE` | `sqlite` | `sqlite` or `postgres` |
 | `TRUESEAL_RELAY_STORE_SQLITE_PATH` | — | **Required** when `store.type = sqlite` |
 | `TRUESEAL_RELAY_STORE_POSTGRES_DSN` | — | **Required** when `store.type = postgres` |
@@ -132,11 +179,14 @@ Env vars (used in Docker) or TOML file (pass with `-config`). Env vars override 
 
 Full annotated example: [`config/relay.toml`](config/relay.toml).
 
-To use a config file instead of env vars:
+### Compose env vars (`.env`)
 
-```sh
-trueseal-relay -config /path/to/relay.toml
-```
+| Variable | Default | |
+|----------|---------|--|
+| `RELAY_DOMAIN` | — | **Required in prod.** Subdomain for health endpoint |
+| `LOGS_DOMAIN` | — | **Required in prod.** Subdomain for Dozzle log viewer |
+| `HEALTH_UPSTREAM` | `relay:7702` | `relay:7702` (single node) or `lb:7702` (cluster) |
+| `RELAY_IMAGE` | `ghcr.io/julianbonomini/trueseal-relay:latest` | Override to pin a version |
 
 ---
 

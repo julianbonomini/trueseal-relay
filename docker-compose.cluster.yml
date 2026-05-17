@@ -20,6 +20,7 @@ services:
   # -- Postgres inbox store --------------------------------------------------
   db:
     image: postgres:16-alpine
+    container_name: trueseal-db
     restart: unless-stopped
     environment:
       POSTGRES_USER: relay
@@ -37,6 +38,7 @@ services:
   relay-1:
     build: .
     image: trueseal-relay:latest
+    container_name: trueseal-relay-1
     restart: unless-stopped
     depends_on:
       db:
@@ -55,6 +57,7 @@ services:
   relay-2:
     build: .
     image: trueseal-relay:latest
+    container_name: trueseal-relay-2
     restart: unless-stopped
     depends_on:
       db:
@@ -75,6 +78,7 @@ services:
   # Noise handshake.
   lb:
     image: haproxy:alpine
+    container_name: trueseal-lb
     restart: unless-stopped
     depends_on:
       - relay-1
@@ -82,12 +86,48 @@ services:
     ports:
       - "7700:7700"   # Receive sessions (Noise XX) -- devices
       - "7701:7701"   # Push sessions (Noise NK) -- trueseal-sync
-      - "7702:7702"   # Health endpoint (HTTP, proxied to relay nodes)
     volumes:
       - ./docker/haproxy.cluster.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+
+  # -- Caddy (HTTPS for health + logs) --------------------------------------
+  caddy:
+    image: caddy:2-alpine
+    container_name: trueseal-caddy
+    restart: unless-stopped
+    profiles: [production]
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    environment:
+      RELAY_DOMAIN: ${RELAY_DOMAIN}
+      LOGS_DOMAIN: ${LOGS_DOMAIN}
+      HEALTH_UPSTREAM: lb:7702
+    depends_on:
+      - lb
+      - dozzle
+
+  # -- Dozzle (public log viewer) -------------------------------------------
+  dozzle:
+    image: amir20/dozzle:latest
+    container_name: trueseal-dozzle
+    restart: unless-stopped
+    ports:
+      - "8080:8080"   # Log viewer -- local testing only (Caddy proxies this in prod)
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      DOZZLE_NO_AUTH: "true"   # public read-only log viewer
 
 volumes:
   postgres-data:
     driver: local
   relay-data:
+    driver: local
+  caddy-data:
+    driver: local
+  caddy-config:
     driver: local
