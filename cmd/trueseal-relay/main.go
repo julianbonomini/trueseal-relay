@@ -16,11 +16,13 @@ import (
 
 	"github.com/julianbonomini/trueseal-relay/internal/config"
 	"github.com/julianbonomini/trueseal-relay/internal/keypair"
+	"github.com/julianbonomini/trueseal-relay/internal/notify"
 	"github.com/julianbonomini/trueseal-relay/internal/notify/inprocess"
 	"github.com/julianbonomini/trueseal-relay/internal/relay"
 	"github.com/julianbonomini/trueseal-relay/internal/session"
-	sqlitestore "github.com/julianbonomini/trueseal-relay/internal/store/sqlite"
 	"github.com/julianbonomini/trueseal-relay/internal/store"
+	pgstore "github.com/julianbonomini/trueseal-relay/internal/store/postgres"
+	sqlitestore "github.com/julianbonomini/trueseal-relay/internal/store/sqlite"
 )
 
 func main() {
@@ -62,7 +64,13 @@ func main() {
 	}
 	log.Printf("relay public key: %x", kp.Public)
 
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
 	var inbox store.InboxStore
+	var notifier interface {
+		notify.Notifier
+	}
 	switch cfg.Store.Type {
 	case "sqlite":
 		s, err := sqlitestore.New(cfg.Store.SQLitePath)
@@ -71,16 +79,21 @@ func main() {
 		}
 		defer s.Close()
 		inbox = s
+		notifier = inprocess.New()
+	case "postgres":
+		s, err := pgstore.New(ctx, cfg.Store.PostgresDSN)
+		if err != nil {
+			log.Fatalf("postgres store: %v", err)
+		}
+		defer s.Close()
+		inbox = s
+		notifier = s
 	default:
 		log.Fatalf("unsupported store type: %s", cfg.Store.Type)
 	}
 
-	notifier := inprocess.New()
 	router := relay.NewRouter(inbox, notifier, cfg.Relay.TTL, cfg.Relay.MaxEnvelopeBytes)
 	reaper := store.NewReaper(inbox, cfg.Relay.ReapInterval)
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	// Start TTL reaper
 	go reaper.Run(ctx)

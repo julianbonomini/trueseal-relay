@@ -1,0 +1,133 @@
+# trueseal-relay -- Clustered deployment (Postgres)
+#
+# Two relay Nodes sharing one Postgres inbox store. An HAProxy load balancer
+# distributes Push and Receive connections across both Nodes.
+#
+# Usage:
+#   1. Start Postgres:
+#        docker-compose -f docker-compose.cluster.yml up -d db
+#   2. Generate keypair once:
+#        docker-compose -f docker-compose.cluster.yml run --rm relay-1 \
+#          /trueseal-relay -genkey -keyout /data/keypair.hex
+#   3. Start everything:
+#        docker-compose -f docker-compose.cluster.yml up -d
+#
+# IMPORTANT: Replace POSTGRES_PASSWORD and the DSN password with a strong
+# secret before deploying.
+
+services:
+
+  # -- Postgres inbox store --------------------------------------------------
+  db:
+    image: postgres:16-alpine
+    container_name: trueseal-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: relay
+      POSTGRES_PASSWORD: changeme
+      POSTGRES_DB: trueseal
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U relay -d trueseal"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # -- Relay Node 1 ----------------------------------------------------------
+  relay-1:
+    build: .
+    image: trueseal-relay:latest
+    container_name: trueseal-relay-1
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - relay-data:/data
+    environment:
+      TRUESEAL_RELAY_KEYPAIR_PATH: /data/keypair.hex
+      TRUESEAL_RELAY_STORE_TYPE: postgres
+      TRUESEAL_RELAY_STORE_POSTGRES_DSN: "postgres://relay:changeme@db:5432/trueseal?sslmode=disable"
+      # TRUESEAL_RELAY_TTL: "720h"
+      # TRUESEAL_RELAY_REAP_INTERVAL: "1h"
+    command: ["-no-config"]
+
+  # -- Relay Node 2 ----------------------------------------------------------
+  relay-2:
+    build: .
+    image: trueseal-relay:latest
+    container_name: trueseal-relay-2
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - relay-data:/data
+    environment:
+      TRUESEAL_RELAY_KEYPAIR_PATH: /data/keypair.hex
+      TRUESEAL_RELAY_STORE_TYPE: postgres
+      TRUESEAL_RELAY_STORE_POSTGRES_DSN: "postgres://relay:changeme@db:5432/trueseal?sslmode=disable"
+      # TRUESEAL_RELAY_TTL: "720h"
+      # TRUESEAL_RELAY_REAP_INTERVAL: "1h"
+    command: ["-no-config"]
+
+  # -- Load balancer ---------------------------------------------------------
+  # HAProxy in TCP mode. The relay uses raw Noise-over-TCP -- standard HTTP
+  # proxies cannot handle this. HAProxy's TCP mode is transparent to the
+  # Noise handshake.
+  lb:
+    image: haproxy:alpine
+    container_name: trueseal-lb
+    restart: unless-stopped
+    depends_on:
+      - relay-1
+      - relay-2
+    ports:
+      - "7700:7700"   # Receive sessions (Noise XX) -- devices
+      - "7701:7701"   # Push sessions (Noise NK) -- trueseal-sync
+    volumes:
+      - ./docker/haproxy.cluster.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+
+  # -- Caddy (HTTPS for health + logs) --------------------------------------
+  caddy:
+    image: caddy:2-alpine
+    container_name: trueseal-caddy
+    restart: unless-stopped
+    profiles: [production]
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    environment:
+      RELAY_DOMAIN: ${RELAY_DOMAIN}
+      LOGS_DOMAIN: ${LOGS_DOMAIN}
+      HEALTH_UPSTREAM: lb:7702
+    depends_on:
+      - lb
+      - dozzle
+
+  # -- Dozzle (public log viewer) -------------------------------------------
+  dozzle:
+    image: amir20/dozzle:latest
+    container_name: trueseal-dozzle
+    restart: unless-stopped
+    ports:
+      - "8080:8080"   # Log viewer -- local testing only (Caddy proxies this in prod)
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      DOZZLE_NO_AUTH: "true"   # public read-only log viewer
+
+volumes:
+  postgres-data:
+    driver: local
+  relay-data:
+    driver: local
+  caddy-data:
+    driver: local
+  caddy-config:
+    driver: local

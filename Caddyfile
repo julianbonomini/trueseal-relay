@@ -4,7 +4,7 @@
 
 # Health endpoint — relay internal status
 {$RELAY_DOMAIN} {
-	reverse_proxy relay:7702
+	reverse_proxy {$HEALTH_UPSTREAM}
 }
 
 # Public log viewer — Dozzle (read-only, no auth by design)

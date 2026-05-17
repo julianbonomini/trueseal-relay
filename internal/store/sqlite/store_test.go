@@ -2,9 +2,7 @@ package sqlite_test
 
 import (
 	"context"
-	"fmt"
 	"path/filepath"
-	"sync"
 	"testing"
 	"time"
 
@@ -49,7 +47,7 @@ func TestNew_InvalidPath(t *testing.T) {
 
 // ── Put ───────────────────────────────────────────────────────────────────────
 
-// Put stores an envelope retrievable via Flush.
+// Put stores an envelope retrievable via Peek.
 func TestPut_StoresEnvelope(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -59,12 +57,12 @@ func TestPut_StoresEnvelope(t *testing.T) {
 		t.Fatalf("Put: %v", err)
 	}
 
-	got, err := s.Flush(ctx, keyA)
+	blobs, err := s.Peek(ctx, keyA)
 	if err != nil {
-		t.Fatalf("Flush: %v", err)
+		t.Fatalf("Peek: %v", err)
 	}
-	if len(got) != 1 || string(got[0]) != string(env) {
-		t.Errorf("want [%q], got %v", env, got)
+	if len(blobs) != 1 || string(blobs[0].Envelope) != string(env) {
+		t.Errorf("want [%q], got %v", env, blobs)
 	}
 }
 
@@ -110,92 +108,12 @@ func TestPut_SurvivesClose(t *testing.T) {
 	}
 	defer s2.Close()
 
-	got, err := s2.Flush(context.Background(), keyA)
+	blobs, err := s2.Peek(context.Background(), keyA)
 	if err != nil {
-		t.Fatalf("Flush after reopen: %v", err)
+		t.Fatalf("Peek after reopen: %v", err)
 	}
-	if len(got) != 1 || string(got[0]) != "survives" {
-		t.Errorf("want ['survives'] after reopen, got %v", got)
-	}
-}
-
-// ── Flush ─────────────────────────────────────────────────────────────────────
-
-// Flush is atomic: returns all envelopes in FIFO order and deletes them.
-func TestFlush_AtomicFetchAndDelete(t *testing.T) {
-	s := newTestStore(t)
-	ctx := context.Background()
-
-	for _, env := range []string{"one", "two", "three"} {
-		s.Put(ctx, keyA, []byte(env), time.Hour) //nolint:errcheck
-	}
-
-	got, err := s.Flush(ctx, keyA)
-	if err != nil {
-		t.Fatalf("Flush: %v", err)
-	}
-	if len(got) != 3 {
-		t.Fatalf("want 3 envelopes, got %d", len(got))
-	}
-	for i, want := range []string{"one", "two", "three"} {
-		if string(got[i]) != want {
-			t.Errorf("got[%d] = %q, want %q", i, got[i], want)
-		}
-	}
-
-	second, err := s.Flush(ctx, keyA)
-	if err != nil {
-		t.Fatalf("second Flush: %v", err)
-	}
-	if len(second) != 0 {
-		t.Errorf("want empty second flush, got %d envelopes", len(second))
-	}
-}
-
-// Flush on an empty inbox returns an empty slice without error.
-func TestFlush_EmptyInbox(t *testing.T) {
-	s := newTestStore(t)
-	got, err := s.Flush(context.Background(), keyA)
-	if err != nil {
-		t.Fatalf("Flush on empty inbox: %v", err)
-	}
-	if len(got) != 0 {
-		t.Errorf("want 0 envelopes, got %d", len(got))
-	}
-}
-
-// Flush only affects the given recipient — other inboxes are untouched.
-func TestFlush_IsolatesRecipients(t *testing.T) {
-	s := newTestStore(t)
-	ctx := context.Background()
-
-	s.Put(ctx, keyA, []byte("for-a"), time.Hour) //nolint:errcheck
-	s.Put(ctx, keyB, []byte("for-b"), time.Hour) //nolint:errcheck
-
-	got, err := s.Flush(ctx, keyA)
-	if err != nil || len(got) != 1 || string(got[0]) != "for-a" {
-		t.Errorf("Flush(keyA): want [for-a], got %v err=%v", got, err)
-	}
-
-	gotB, err := s.Flush(ctx, keyB)
-	if err != nil || len(gotB) != 1 || string(gotB[0]) != "for-b" {
-		t.Errorf("Flush(keyB): want [for-b], got %v err=%v", gotB, err)
-	}
-}
-
-// Flush with a cancelled context returns an error.
-func TestFlush_CancelledContext(t *testing.T) {
-	s := newTestStore(t)
-	ctx := context.Background()
-
-	s.Put(ctx, keyA, []byte("env"), time.Hour) //nolint:errcheck
-
-	cancelled, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	_, err := s.Flush(cancelled, keyA)
-	if err == nil {
-		t.Error("want error for cancelled context, got nil")
+	if len(blobs) != 1 || string(blobs[0].Envelope) != "survives" {
+		t.Errorf("want ['survives'] after reopen, got %v", blobs)
 	}
 }
 
@@ -298,55 +216,11 @@ func TestReap_DeletesExpiredOnly(t *testing.T) {
 		t.Fatalf("Reap: %v", err)
 	}
 
-	got, err := s.Flush(ctx, keyA)
+	blobs, err := s.Peek(ctx, keyA)
 	if err != nil {
-		t.Fatalf("Flush after Reap: %v", err)
+		t.Fatalf("Peek after Reap: %v", err)
 	}
-	if len(got) != 1 || string(got[0]) != "live" {
-		t.Errorf("want ['live'] after reap, got %v", got)
-	}
-}
-
-// ── T7: Concurrent Flush ───────────────────────────────────────────────────
-
-// Two goroutines calling Flush for the same key simultaneously must together
-// receive exactly N envelopes — no double delivery (atomicity) and no loss
-// (serialised via single DB connection).
-func TestFlush_ConcurrentSameKey(t *testing.T) {
-	s := newTestStore(t)
-	ctx := context.Background()
-
-	const N = 5
-	for i := 0; i < N; i++ {
-		env := []byte(fmt.Sprintf("env-%d", i))
-		if err := s.Put(ctx, keyA, env, time.Hour); err != nil {
-			t.Fatalf("Put[%d]: %v", i, err)
-		}
-	}
-
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	var allGot [][]byte
-
-	for i := 0; i < 2; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			got, err := s.Flush(ctx, keyA)
-			if err != nil {
-				// Serialization conflict: the other goroutine already holds the
-				// transaction lock. This is acceptable — those envelopes were
-				// or will be delivered by the winning goroutine.
-				return
-			}
-			mu.Lock()
-			allGot = append(allGot, got...)
-			mu.Unlock()
-		}()
-	}
-	wg.Wait()
-
-	if len(allGot) != N {
-		t.Errorf("want %d total envelopes (no double delivery, no loss), got %d", N, len(allGot))
+	if len(blobs) != 1 || string(blobs[0].Envelope) != "live" {
+		t.Errorf("want ['live'] after reap, got %v", blobs)
 	}
 }

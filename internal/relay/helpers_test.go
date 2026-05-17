@@ -29,3 +29,12 @@ func readMsg(t *testing.T, conn net.Conn) []byte {
 	}
 	return buf
 }
+
+func writeMsgRaw(conn net.Conn, msg []byte) error {
+	out := make([]byte, 2+len(msg))
+	out[0] = byte(len(msg) >> 8)
+	out[1] = byte(len(msg))
+	copy(out[2:], msg)
+	_, err := conn.Write(out)
+	return err
+}

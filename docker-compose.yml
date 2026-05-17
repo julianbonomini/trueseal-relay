@@ -33,6 +33,7 @@ services:
     environment:
       RELAY_DOMAIN: ${RELAY_DOMAIN}
       LOGS_DOMAIN: ${LOGS_DOMAIN}
+      HEALTH_UPSTREAM: relay:7702
     depends_on:
       - relay
       - dozzle

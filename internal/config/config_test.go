@@ -178,3 +178,37 @@ func TestConfig_EnvOverride(t *testing.T) {
 		t.Errorf("want /tmp/override.db, got %q", cfg.Store.SQLitePath)
 	}
 }
+
+// Postgres type requires postgres_dsn.
+func TestConfig_MissingPostgresDSN_Fails(t *testing.T) {
+	p := writeFile(t, `
+[relay]
+keypair_path = "/etc/keypair.hex"
+
+[store]
+type = "postgres"
+`)
+	_, err := config.Load(p)
+	if err == nil {
+		t.Error("want error for missing postgres_dsn, got nil")
+	}
+}
+
+// Postgres DSN accepted via env var.
+func TestConfig_PostgresDSN_FromEnv(t *testing.T) {
+	p := writeFile(t, `
+[relay]
+keypair_path = "/etc/keypair.hex"
+
+[store]
+type = "postgres"
+`)
+	t.Setenv("TRUESEAL_RELAY_STORE_POSTGRES_DSN", "postgres://relay:pass@db:5432/trueseal")
+	cfg, err := config.Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Store.PostgresDSN != "postgres://relay:pass@db:5432/trueseal" {
+		t.Errorf("want DSN from env, got %q", cfg.Store.PostgresDSN)
+	}
+}
