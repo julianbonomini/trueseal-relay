@@ -10,7 +10,8 @@ RUN go mod download
 COPY . .
 
 # Pure Go build — modernc.org/sqlite requires no CGO
-RUN CGO_ENABLED=0 GOOS=linux \
+ARG TARGETOS TARGETARCH
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
   go build -ldflags="-s -w" -trimpath \
   -o /trueseal-relay ./cmd/trueseal-relay
 
