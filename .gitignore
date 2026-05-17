@@ -18,3 +18,4 @@ keypair.hex
 
 # OS
 .DS_Store
+.env
