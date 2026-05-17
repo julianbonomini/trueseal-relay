@@ -10,9 +10,9 @@ RUN go mod download
 COPY . .
 
 # Pure Go build — modernc.org/sqlite requires no CGO
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -ldflags="-s -w" -trimpath \
-    -o /trueseal-relay ./cmd/trueseal-relay
+RUN CGO_ENABLED=0 GOOS=linux \
+  go build -ldflags="-s -w" -trimpath \
+  -o /trueseal-relay ./cmd/trueseal-relay
 
 # ── final stage ───────────────────────────────────────────────────────────────
 # alpine: smallest image that provides /bin/sh for the entrypoint script
