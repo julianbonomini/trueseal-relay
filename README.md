@@ -237,4 +237,4 @@ Tests are skipped automatically when `TEST_POSTGRES_DSN` is not set.
 - **Durable until delivered** — accepted blobs survive crashes; Ack sent only after persistence (ADR-0009)
 - **Replaceable** — no specific Node is load-bearing; swap or scale without changing the security model (ADR-0010)
 
-→ [MANIFESTO.md](MANIFESTO.md) · [trueseal-protocol wire spec](https://github.com/julianbonomini/trueseal-protocol)
+→ [MANIFESTO.md](MANIFESTO.md) · [Protocol overview](https://trueseal.dev/docs/protocol/overview) · [trueseal-relay docs](https://trueseal.dev/docs/components/trueseal-relay/overview)
