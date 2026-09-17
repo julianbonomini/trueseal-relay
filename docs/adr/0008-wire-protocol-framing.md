@@ -46,7 +46,7 @@ The relay validates `len(body) >= 32` — if not, the blob is rejected and no Ac
 
 ## DeliverAck semantics
 
-`DeliverAck (0x06)` is sent by the Device after it has durably received and persisted a `Deliver` frame. The body carries the opaque `blob_id` echoed from the corresponding Deliver frame — the relay uses it to delete the blob from the InboxStore.
+`DeliverAck (0x06)` is sent by the Device immediately after receiving a `Deliver` frame. The body carries the opaque `blob_id` echoed from the corresponding Deliver frame — the relay uses it to delete the blob from the InboxStore. The Ack confirms transport receipt by the client process, not decryption or an application database commit.
 
 The `blob_id` is an opaque u64 assigned by the relay. The client must not interpret it — only echo it back. The relay currently uses the InboxStore's internal row ID, but the wire contract makes no guarantee about its meaning.
 
@@ -54,11 +54,11 @@ Sequence for Receive Sessions:
 1. Device opens Noise XX Receive Session
 2. Relay Peeks inbox — fetches blobs without deleting
 3. For each blob: relay sends `Deliver [blob_id][envelope]`
-4. Device persists envelope, sends `DeliverAck [blob_id]`
+4. Device receives frame bytes, sends `DeliverAck [blob_id]`
 5. Relay receives DeliverAck → deletes blob from InboxStore by blob_id
 6. If session closes before DeliverAck arrives, blob remains in store and is re-delivered on next Receive Session
 
-Deduplication is the client's responsibility — a blob may be delivered more than once across sessions.
+Deduplication is the client's responsibility — a blob may be delivered more than once across sessions. trueseal-sync derives a stable application Message ID from signed Envelope metadata; the relay's `blob_id` remains internal and must not be used for application deduplication.
 
 ## Ack semantics
 

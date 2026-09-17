@@ -27,7 +27,8 @@ type InboxStore interface {
 	// survives a process restart.
 	// Put does not deduplicate — if the same envelope is stored twice
 	// (e.g. outbox replay after a crash), both copies are stored.
-	// Deduplication is the recipient client's responsibility.
+	// Transport deduplication is the recipient client's responsibility. Relay blob
+	// IDs are not application message IDs and are unstable across duplicate puts.
 	Put(ctx context.Context, recipientKey []byte, envelope []byte, ttl time.Duration) error
 
 	// Peek fetches all envelopes for recipientKey without deleting them.
