@@ -43,7 +43,7 @@ Two or more Nodes sharing a common external Inbox store (Postgres). Any Node han
 _Avoid_: fleet, pool, farm
 
 **Operator**:
-The person or organisation deploying trueseal-relay. Responsible for: generating and safeguarding the relay Keypair, distributing the relay public key to Device operators, and configuring TTL and blob size limits. trueseal-relay makes no assumptions about who the operator is — a relay run by a trusted friend and a relay run by an adversary provide identical security guarantees to end users. Deployment is self-contained: a single binary or docker compose, no external dependencies required for a single-Node deployment. Operators are expected to expose relay logs publicly — this is a trust signal, not a liability, because the relay is blind: logs contain no IP addresses, no sender identity, no content.
+The person or organisation deploying trueseal-relay. Responsible for: generating and safeguarding the relay Keypair, distributing the relay public key to Device operators, and configuring TTL and blob size limits. trueseal-relay makes no assumptions about who the operator is — a relay run by a trusted friend and a relay run by an adversary provide identical security guarantees to end users. Deployment is self-contained: a single binary or docker compose, no external dependencies required for a single-Node deployment. In normal operation the relay emits no client metadata (no IP addresses, keys, sizes or per-message events), and its logs are private to the Operator. Verbose logging exists only in an explicit dev mode (ADR-0012).
 _Avoid_: admin, owner, host
 
 ## Relationships
@@ -71,10 +71,10 @@ _Avoid_: admin, owner, host
 > **Domain expert:** "No. Push notifications require knowing a device's APNs or FCM token — that's device identity. The relay has no concept of identity beyond public keys. Offline delivery is handled by the relay's Inbox and trueseal-sync's outbox replay when the device reconnects."
 
 > **Operator:** "Can I run multiple relay nodes behind a load balancer?"
-> **Domain expert:** "Yes, as long as they share an Inbox store. Any Node can handle any request — there is no node-local state. A Node can be replaced or fail without losing any accepted Envelopes."
+> **Domain expert:** "Experimentally. The supported deployment is a single Node on SQLite. Clustering works as long as the Nodes share an Inbox store. Any Node can handle any request — there is no node-local state. A Node can be replaced or fail without losing any accepted Envelopes."
 
 > **User:** "How do I know you're not logging who sends what through your relay?"
-> **Operator:** "Check the public logs at logs.yourdomain.com. The relay emits no IP addresses, no sender identities, no content — only connection counts, delivery events, and errors. If you see anything else, it's a bug."
+> **Operator:** "The relay doesn't record it. In normal operation it logs only startup, shutdown and errors — no IP addresses, no keys, no sizes, no per-message events. If a normal-mode log line contains client metadata, it's a bug."
 
 ## Flagged ambiguities
 
