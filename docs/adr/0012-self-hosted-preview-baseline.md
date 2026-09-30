@@ -1,6 +1,6 @@
 # Self-hosted preview baseline: abuse limits, private logs, no metrics
 
-Status: accepted (decided 2026-09-29 in [trueseal-roadmap#11](https://github.com/julianbonomini/trueseal-roadmap/issues/11); not yet implemented). This supersedes the public-log rationale of ADR-0011. Its rule of never logging IPs stands. It also narrows ADR-0010 (Postgres/cluster) to experimental.
+Status: accepted (decided 2026-09-29 in [trueseal-roadmap#11](https://github.com/julianbonomini/trueseal-roadmap/issues/11); the IP rule was tightened on 2026-09-30 in [trueseal-roadmap#26](https://github.com/julianbonomini/trueseal-roadmap/issues/26); not yet implemented). This supersedes the public-log rationale of ADR-0011. Its rule of never logging IPs stands. It also narrows ADR-0010 (Postgres/cluster) to experimental.
 
 The developer preview supports exactly one self-hosted deployment: a single Node on SQLite, run from the repo's Docker compose file. That Node enforces abuse limits by default. In normal operation it emits nothing about clients, exposes no metrics, and keeps its logs private to the Operator.
 
@@ -33,8 +33,17 @@ Accepted consequence: anyone who knows a Device's public key can use up that Dev
 ## Logging
 
 - **Normal mode** logs lifecycle events (startup, listener addresses, the relay public key, shutdown) and errors. A normal-mode log line never contains an IP address, a key or key prefix, a size, a Blob ID, a timestamp tied to an individual message, or any other per-client or per-message field.
-- **Dev mode** is enabled with the `-dev` flag or `TRUESEAL_RELAY_DEV=1`. It prints a prominent warning at startup, and `/healthz` reports `dev_mode: true`. Dev mode may log key prefixes, sizes, Blob IDs and remote addresses. It never logs payload bytes.
+- **Dev mode** is enabled with the `-dev` flag or `TRUESEAL_RELAY_DEV=1`. It prints a prominent warning at startup, and `/healthz` reports `dev_mode: true`. Dev mode may log key prefixes, sizes and Blob IDs. It never logs payload bytes or IP addresses.
 - **No log viewer ships.** Dozzle, and the Caddy route in front of it, are removed. Logs are private to the Operator.
+
+## IP addresses
+
+**The relay never logs, stores or uses a client's IP address, in any mode.** No log line in normal or dev mode, no store row and no limit contains or depends on a peer address. The relay's own promise has no conditions attached, because a promise that only holds "in normal mode" breaks as soon as someone runs dev mode in production, and debugging the protocol never needs an IP.
+
+What this does not cover: the host OS, the VPS provider and any firewall the Operator adds still see each TCP connection's source address. Hiding the IP from the host needs a network hop the Operator doesn't control (Tor or an independent proxy). That is out of scope for the preview; see the [IP-hiding research](https://github.com/julianbonomini/trueseal-roadmap/blob/research/relay-ip-hiding/research/relay-ip-hiding.md).
+
+- **Release gate:** an e2e scenario runs the real relay in normal and dev mode through the receive, push, connection-limit, deadline and shutdown paths. It fails if any client address appears in the relay's log output or in `inbox.db`.
+- **Public wording:** "The relay never logs, stores or uses your IP address. The server it runs on still sees the connection, as with any internet service. To hide your IP from the server too, use a VPN or Tor." Copy never says the relay "can't see" IPs.
 
 ## Health and metrics
 
@@ -76,4 +85,6 @@ SQLite is the only supported backend. The Postgres adapter, the cluster compose 
 - **Relay-initiated heartbeats.** Rejected. The client already owns reconnection, so it also owns liveness.
 - **Aggregate Prometheus metrics.** Deferred. Adding them later breaks nothing.
 - **Public, privacy-scrubbed logs as a trust signal (ADR-0011's rationale).** Rejected. Logs can't prove blindness, because a single leaky line undoes the claim and nobody can audit that a line was never written.
+- **IP addresses in dev-mode logs.** Rejected on 2026-09-30. It would make the no-IP promise conditional, for no real debugging gain.
+- **Hiding client IPs from the relay host in the preview (Tor, an SDK proxy option, or a third-party hop).** Deferred past the preview. The only hops that help are ones the Operator doesn't control. Tor is weak on iOS, a proxy option adds public SDK API and gate scope, and a default third-party hop is an external commitment.
 - **Postgres as a supported single-node backend.** Rejected for the preview. It would double the gate matrix and adds nothing on a single Node.
