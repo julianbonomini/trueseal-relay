@@ -27,7 +27,7 @@ The act of the relay forwarding an Envelope from an Inbox to a Device's active R
 _Avoid_: push, send, forward, flush
 
 **TTL (Time-to-Live)**:
-The maximum time an undelivered Envelope remains in an Inbox. Envelopes exceeding the TTL are Reaped regardless of delivery status. Protects against unbounded storage growth from abandoned or lost Devices.
+The maximum time an undelivered Envelope remains in an Inbox. Envelopes exceeding the TTL are Reaped regardless of delivery status. Protects against unbounded storage growth from abandoned or lost Devices. Defaults to 30 days, and an Operator may only lower it: the relay refuses to start with a longer TTL (ADR-0012).
 _Avoid_: expiry, timeout, retention period
 
 **Reap**:

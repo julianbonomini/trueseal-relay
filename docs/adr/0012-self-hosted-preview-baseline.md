@@ -1,6 +1,6 @@
 # Self-hosted preview baseline: abuse limits, private logs, no metrics
 
-Status: accepted (decided 2026-09-29 in [trueseal-roadmap#11](https://github.com/julianbonomini/trueseal-roadmap/issues/11); the IP rule was tightened on 2026-09-30 in [trueseal-roadmap#26](https://github.com/julianbonomini/trueseal-roadmap/issues/26); not yet implemented). This supersedes the public-log rationale of ADR-0011. Its rule of never logging IPs stands. It also narrows ADR-0010 (Postgres/cluster) to experimental.
+Status: accepted (decided 2026-09-29 in [trueseal-roadmap#11](https://github.com/julianbonomini/trueseal-roadmap/issues/11); the IP rule was tightened on 2026-09-30 in [trueseal-roadmap#26](https://github.com/julianbonomini/trueseal-roadmap/issues/26); not yet implemented; the TTL ceiling was lowered to 30 days on 2026-09-30 by trueseal-sync ADR-0034 in [trueseal-roadmap#30](https://github.com/julianbonomini/trueseal-roadmap/issues/30)). This supersedes the public-log rationale of ADR-0011. Its rule of never logging IPs stands. It also narrows ADR-0010 (Postgres/cluster) to experimental.
 
 The developer preview supports exactly one self-hosted deployment: a single Node on SQLite, run from the repo's Docker compose file. That Node enforces abuse limits by default. In normal operation it emits nothing about clients, exposes no metrics, and keeps its logs private to the Operator.
 
@@ -26,7 +26,7 @@ Push Sessions are anonymous, so every limit is keyed on the recipient Inbox, the
 | Envelope size | Protocol Size Limit (trueseal-sync ADR-0025) | `too large` (permanent) |
 | TTL | 30 days | Reaped |
 
-Refusal codes and client backoff follow trueseal-sync ADR-0026. The Operator can change every value, but the envelope size limit can only be lowered. **The relay refuses to start with a TTL longer than the client dedup window (60 days)**, so a restored snapshot can never re-deliver a message that clients have already forgotten.
+Refusal codes and client backoff follow trueseal-sync ADR-0026. The Operator can change every value, but the envelope size limit and the TTL can only be lowered. **The relay refuses to start with a TTL longer than 30 days**, which is the client Replay Window (60 days) minus the client Outbox expiry (30 days). A message pushed on its last outbox day then still arrives inside the Replay Window, so an honest message is never rejected as too old while its sender believes it was delivered (trueseal-sync ADR-0034).
 
 Accepted consequence: anyone who knows a Device's public key can use up that Device's quota and delay its delivery. This is a targeted availability attack. The preview threat model documents it; the relay does not prevent it.
 
@@ -73,7 +73,7 @@ A push cut off before its Ack is retried by the sender. That is ordinary at-leas
 
 - **The keypair is the critical asset.** Back it up once. Losing it means reconfiguring every client.
 - **`inbox.db` is a buffer, not a record.** Losing it loses only undelivered messages, which senders will not resend because the relay already acked them. Backing it up is optional and uses SQLite's online `.backup`.
-- **Restoring an older snapshot is safe.** Already-delivered Blobs come back and are delivered again, and client dedup hides them, because the TTL cannot exceed the dedup window.
+- **Restoring an older snapshot is safe.** Already-delivered Blobs come back and are delivered again. Clients drop them: a Blob still inside the Replay Window hits its dedup record, and an older one is rejected by the window (trueseal-sync ADR-0031, ADR-0034).
 
 ## Storage backends
 
