@@ -49,6 +49,7 @@ type server struct {
 	pushLn, recvLn net.Listener
 	healthSrv      *http.Server
 	reaperCancel   context.CancelFunc
+	reaperDone     chan struct{}
 
 	// RELAY-11: session contexts derive from two shutdown-scoped parents,
 	// one per kind, so the drain can cut them independently per ADR-0012:
@@ -133,7 +134,11 @@ func (s *server) start() error {
 
 	reaperCtx, reaperCancel := context.WithCancel(context.Background())
 	s.reaperCancel = reaperCancel
-	go s.reaper.Run(reaperCtx)
+	s.reaperDone = make(chan struct{})
+	go func() {
+		s.reaper.Run(reaperCtx)
+		close(s.reaperDone)
+	}()
 
 	s.pushCtx, s.pushCancel = context.WithCancel(context.Background())
 	s.recvCtx, s.recvCancel = context.WithCancel(context.Background())
@@ -183,7 +188,14 @@ func (s *server) acceptLoop(ln net.Listener, kind string, sem chan struct{}, kin
 				defer func() { <-sem }()
 			}
 			if err := accept(kindCtx, c, s.relayKey, s.handler, s.deadlines); err != nil {
-				s.errLog.logf(kind, err)
+				// A cancellation-triggered close mid-handshake is shutdown
+				// doing its job, not a session error — logging it would emit
+				// a spurious "session error (closed)" on every graceful stop
+				// (parked C13 note). Live-operation errors are still
+				// classified and rate-limited by errLog.
+				if kindCtx.Err() == nil {
+					s.errLog.logf(kind, err)
+				}
 			}
 		}(conn)
 	}
@@ -239,7 +251,16 @@ func (s *server) shutdown() {
 		log.Printf("shutdown hard grace exceeded — forcing exit")
 	}
 
-	// 6. Stop the reaper. The caller closes the store after shutdown
-	// returns (ADR-0012 step 4).
+	// 6. Stop the reaper and WAIT for it to exit before returning: the
+	// caller closes the store next, and a reaper mid-Reap must not race
+	// that close (parked C13 note). The wait is bounded — a reaper pass
+	// on a live store completes in milliseconds; the bound only covers a
+	// wedged store call, in which case shutdown must still return.
+	// (ADR-0012 step 4.)
 	s.reaperCancel()
+	select {
+	case <-s.reaperDone:
+	case <-time.After(2 * time.Second):
+		log.Printf("reaper did not stop within 2s of cancellation — closing the store anyway")
+	}
 }
