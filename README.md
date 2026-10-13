@@ -218,8 +218,17 @@ Env vars (used in Docker) or TOML file (pass with `-config`). Env vars override 
 | `TRUESEAL_RELAY_PUSH_RATE_PER_SECOND` | `20` | per-recipient sustained push rate (token bucket) |
 | `TRUESEAL_RELAY_PUSH_RATE_BURST` | `500` | per-recipient bucket capacity; refusal `rateLimited` (temporary) |
 | `TRUESEAL_RELAY_MAX_RECEIVE_SESSIONS_PER_DEVICE` | `4` | concurrent Receive Sessions per Device key; excess refused |
+| `TRUESEAL_RELAY_DEV` | off | dev logging mode (see below); `-dev` flag equivalent; never settable from TOML |
 
 Abuse limits and deadlines follow ADR-0012: every limit is keyed on the recipient Inbox, the Device key or a global count — never on a peer address. All values accept short durations/counts so e2e can exercise them. No refusal is logged in normal mode.
+
+### Logging modes
+
+**Normal mode (default).** The relay logs lifecycle events (startup, listener addresses, its own public key, shutdown) and errors. A normal-mode log line never contains an IP address, a key or key prefix, a size, a Blob ID or any other per-client field (ADR-0012). Session errors are rate-limited to one field-free line per listener per minute, carrying a one-word class — `timeout`, `reset`, `closed` or `internal` — so a scanner cannot flood the log and an operator still gets signal. Refusals are silent.
+
+**Dev mode (`-dev` or `TRUESEAL_RELAY_DEV=1`).** For debugging the protocol. It prints a prominent warning at startup, and `GET /healthz` reports `"dev_mode":true`. Dev mode adds per-message detail — device key prefixes, envelope sizes, Blob IDs, session lifecycle events — and surfaces the silent-refusal counters (rate limited, inbox full, too large, malformed, per-device session cap, connection limit) with running totals. Dev mode is never settable from the TOML config: verbose logging is always an explicit, per-invocation choice.
+
+**In any mode, the relay never logs, stores or uses a client's IP address, and never logs payload bytes.** The promise has no conditions attached (ADR-0012 "IP addresses"), and it is verified by a test that runs a full session over real TCP in dev mode and fails if any peer address or payload byte reaches the log. Non-test code contains no `RemoteAddr()` call, enforced by a source-scanning test.
 
 Every numeric knob is explicit: an unset knob takes its default, but an explicit zero or negative value refuses startup with a clear message (omit the setting to use the default). The two protocol ceilings — the 30-day TTL cap and the 65,482-byte envelope limit — may only be lowered; a higher value refuses startup (RELAY-8, sync ADR-0025/0034).
 
