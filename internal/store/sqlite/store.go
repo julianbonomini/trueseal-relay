@@ -78,12 +78,19 @@ func (s *Store) Put(ctx context.Context, recipientKey []byte, envelope []byte, t
 // Peek fetches all envelopes for recipientKey without deleting them.
 // Returns InboxBlob values in insertion order (FIFO).
 func (s *Store) Peek(ctx context.Context, recipientKey []byte) ([]store.InboxBlob, error) {
+	return s.PeekAfter(ctx, recipientKey, 0)
+}
+
+// PeekAfter fetches envelopes for recipientKey with IDs strictly greater than
+// afterID, in insertion order (FIFO), without deleting them.
+// See store.InboxStore.PeekAfter.
+func (s *Store) PeekAfter(ctx context.Context, recipientKey []byte, afterID int64) ([]store.InboxBlob, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, envelope FROM inbox WHERE recipient = ? ORDER BY id ASC`,
-		recipientKey,
+		`SELECT id, envelope FROM inbox WHERE recipient = ? AND id > ? ORDER BY id ASC`,
+		recipientKey, afterID,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("sqlite: peek: %w", err)
+		return nil, fmt.Errorf("sqlite: peek after: %w", err)
 	}
 	defer rows.Close()
 
@@ -91,12 +98,12 @@ func (s *Store) Peek(ctx context.Context, recipientKey []byte) ([]store.InboxBlo
 	for rows.Next() {
 		var b store.InboxBlob
 		if err := rows.Scan(&b.ID, &b.Envelope); err != nil {
-			return nil, fmt.Errorf("sqlite: peek scan: %w", err)
+			return nil, fmt.Errorf("sqlite: peek after scan: %w", err)
 		}
 		blobs = append(blobs, b)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("sqlite: peek rows: %w", err)
+		return nil, fmt.Errorf("sqlite: peek after rows: %w", err)
 	}
 	return blobs, nil
 }

@@ -47,13 +47,13 @@ func (rr *readyRouter) OnPush(ctx context.Context, body []byte) error {
 	return rr.inner.OnPush(ctx, body)
 }
 
-func (rr *readyRouter) OnReceiveConnect(ctx context.Context, key relay.RecipientKey) <-chan relay.DeliveryBlob {
-	ch := rr.inner.OnReceiveConnect(ctx, key)
+func (rr *readyRouter) OnReceiveConnect(ctx context.Context, key relay.RecipientKey) (<-chan relay.DeliveryBlob, error) {
+	ch, err := rr.inner.OnReceiveConnect(ctx, key)
 	select {
 	case rr.readyCh <- struct{}{}:
 	default:
 	}
-	return ch
+	return ch, err
 }
 
 func (rr *readyRouter) OnDeliverAck(ctx context.Context, key relay.RecipientKey, blobID int64) error {

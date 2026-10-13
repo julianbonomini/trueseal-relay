@@ -2,6 +2,7 @@ package session_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"testing"
@@ -29,13 +30,13 @@ func newReceiveHandler() *receiveHandler {
 
 func (h *receiveHandler) OnPush(_ context.Context, _ []byte) error { return nil }
 
-func (h *receiveHandler) OnReceiveConnect(_ context.Context, key relay.RecipientKey) <-chan relay.DeliveryBlob {
+func (h *receiveHandler) OnReceiveConnect(_ context.Context, key relay.RecipientKey) (<-chan relay.DeliveryBlob, error) {
 	// Signal the key before returning so tests can synchronise via connectedCh.
 	select {
 	case h.connectedCh <- key:
 	default:
 	}
-	return h.deliverCh
+	return h.deliverCh, nil
 }
 
 func (h *receiveHandler) OnDeliverAck(_ context.Context, _ relay.RecipientKey, _ int64) error {
@@ -191,15 +192,16 @@ func TestAcceptReceive_EarlyBufferedBlobDelivered(t *testing.T) {
 	client.Close()
 }
 
-// AcceptReceive: if OnReceiveConnect returns a pre-closed channel (Subscribe failure),
-// AcceptReceive must close the connection rather than silently continue unable to deliver.
+// AcceptReceive: if OnReceiveConnect reports a registration error (Subscribe
+// failure), AcceptReceive must close the connection rather than silently
+// continue unable to deliver (RELAY-7: explicit error, no channel probing).
 func TestAcceptReceive_SubscribeFailureClosesConnection(t *testing.T) {
 	relayKey, _ := noise.DH25519.GenerateKeypair(nil)
 	deviceKey, _ := noise.DH25519.GenerateKeypair(nil)
 
 	client, server := net.Pipe()
 
-	// failHandler returns a pre-closed channel, simulating Subscribe failure.
+	// failHandler returns an error, simulating Subscribe failure.
 	failHandler := &subscribeFailHandler{}
 
 	acceptDone := make(chan error, 1)
@@ -235,10 +237,8 @@ func TestAcceptReceive_SubscribeFailureClosesConnection(t *testing.T) {
 type subscribeFailHandler struct{}
 
 func (h *subscribeFailHandler) OnPush(_ context.Context, _ []byte) error { return nil }
-func (h *subscribeFailHandler) OnReceiveConnect(_ context.Context, _ relay.RecipientKey) <-chan relay.DeliveryBlob {
-	ch := make(chan relay.DeliveryBlob)
-	close(ch)
-	return ch
+func (h *subscribeFailHandler) OnReceiveConnect(_ context.Context, _ relay.RecipientKey) (<-chan relay.DeliveryBlob, error) {
+	return nil, errors.New("subscribe failed")
 }
 func (h *subscribeFailHandler) OnDeliverAck(_ context.Context, _ relay.RecipientKey, _ int64) error {
 	return nil

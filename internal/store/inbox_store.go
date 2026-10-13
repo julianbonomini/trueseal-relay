@@ -39,6 +39,14 @@ type InboxStore interface {
 	// Used to implement Ack-gated deletion — see ADR-0009.
 	Peek(ctx context.Context, recipientKey []byte) ([]InboxBlob, error)
 
+	// PeekAfter fetches envelopes for recipientKey with store-assigned IDs
+	// strictly greater than afterID, in arrival order, without deleting them.
+	// A Receive Session passes the ID of the last Blob it delivered so that
+	// each Blob is delivered once per session — un-acked Blobs are re-sent
+	// only on a new Receive Session (RELAY-7; sync ADR-0026). afterID 0
+	// returns the whole Inbox, equivalent to Peek.
+	PeekAfter(ctx context.Context, recipientKey []byte, afterID int64) ([]InboxBlob, error)
+
 	// DeleteForRecipient deletes blobs by their store-assigned IDs, but only
 	// from the inbox owned by recipientKey. IDs that are missing, already
 	// reaped or deleted, or belong to another inbox are silently ignored —
