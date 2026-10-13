@@ -2,8 +2,25 @@ package store
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+// ErrInboxFull is returned by PutWithLimits when the recipient's Inbox has
+// reached a configured occupancy limit (blob count or total bytes). It is a
+// TEMPORARY refusal (RELAY-6; ADR-0012): space frees up when blobs are
+// delivered-and-acked or reaped, so the pusher may retry later.
+var ErrInboxFull = errors.New("store: recipient inbox full")
+
+// InboxLimits caps per-Inbox occupancy (ADR-0012 abuse limits). The zero
+// value means no limit: MaxBlobs and MaxBytes of 0 disable their respective
+// checks. Keyed on the recipient Inbox only — never on a peer address.
+type InboxLimits struct {
+	// MaxBlobs is the maximum number of undelivered blobs one Inbox holds.
+	MaxBlobs int64
+	// MaxBytes is the maximum total envelope bytes one Inbox holds.
+	MaxBytes int64
+}
 
 // InboxBlob is a blob fetched from the InboxStore via Peek.
 // ID is an opaque store-assigned identifier used to delete the blob
@@ -31,6 +48,14 @@ type InboxStore interface {
 	// Transport deduplication is the recipient client's responsibility. Relay blob
 	// IDs are not application message IDs and are unstable across duplicate puts.
 	Put(ctx context.Context, recipientKey []byte, envelope []byte, ttl time.Duration) error
+
+	// PutWithLimits is Put with an atomic occupancy check (RELAY-6;
+	// ADR-0012): if storing envelope would exceed limits for recipientKey's
+	// Inbox, nothing is stored and the error wraps ErrInboxFull. The check
+	// and the insert happen in one transaction, so concurrent pushes cannot
+	// both pass the check and overshoot the quota. A zero-value limits
+	// disables the check (equivalent to Put).
+	PutWithLimits(ctx context.Context, recipientKey []byte, envelope []byte, ttl time.Duration, limits InboxLimits) error
 
 	// Peek fetches all envelopes for recipientKey without deleting them.
 	// Returns InboxBlob values carrying the store-assigned ID alongside content.

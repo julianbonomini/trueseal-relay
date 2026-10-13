@@ -93,6 +93,9 @@ type errorStore struct{}
 func (e *errorStore) Put(_ context.Context, _ []byte, _ []byte, _ time.Duration) error {
 	return nil
 }
+func (e *errorStore) PutWithLimits(_ context.Context, _ []byte, _ []byte, _ time.Duration, _ store.InboxLimits) error {
+	return nil
+}
 func (e *errorStore) Peek(_ context.Context, _ []byte) ([]store.InboxBlob, error) {
 	return nil, nil
 }
