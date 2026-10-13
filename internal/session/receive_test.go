@@ -70,6 +70,63 @@ func TestAcceptReceive_ExtractsDeviceKey(t *testing.T) {
 	_, _ = cs1, cs2
 }
 
+// The version prefix is bound into the Noise prologue: a client that
+// presents the correct prefix but handshakes with a DIFFERENT prologue
+// (a tampered prefix in transit) must fail the handshake (ADR-0022).
+func TestAcceptReceive_TamperedPrologueFailsHandshake(t *testing.T) {
+	relayKey, _ := noise.DH25519.GenerateKeypair(nil)
+	deviceKey, _ := noise.DH25519.GenerateKeypair(nil)
+
+	client, server := net.Pipe()
+	h := newReceiveHandler()
+	acceptDone := make(chan error, 1)
+	go func() { acceptDone <- session.AcceptReceive(server, relayKey, h) }()
+
+	// Correct prefix on the wire — the relay replies 0x01 and binds it.
+	prologue := clientVersionExchange(t, client)
+
+	// The client binds a TAMPERED prologue (one byte flipped).
+	tampered := append([]byte(nil), prologue...)
+	tampered[4] ^= 0xff
+	cfg := noise.Config{
+		CipherSuite:   noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashBLAKE2s),
+		Pattern:       noise.HandshakeXX,
+		Initiator:     true,
+		StaticKeypair: deviceKey,
+		Prologue:      tampered,
+	}
+	hs, err := noise.NewHandshakeState(cfg)
+	if err != nil {
+		t.Fatalf("XX handshake state: %v", err)
+	}
+
+	client.SetDeadline(time.Now().Add(2 * time.Second))
+
+	// → e (the first message carries no prologue-dependent ciphertext)
+	msg, _, _, err := hs.WriteMessage(nil, nil)
+	if err != nil {
+		t.Fatalf("XX write e: %v", err)
+	}
+	writeMsg(t, client, msg)
+
+	// ← e, ee, s, es — the relay's static key is encrypted under a handshake
+	// hash that already includes the prologue, so the divergence breaks
+	// authentication HERE: the client cannot even read the relay's reply.
+	resp := readMsg(t, client)
+	if _, _, _, err = hs.ReadMessage(nil, resp); err == nil {
+		t.Fatal("client read the relay's reply despite a tampered prologue — the version is NOT bound")
+	}
+
+	// The client aborts; the relay's accept must terminate (it never
+	// completes the handshake).
+	client.Close()
+	select {
+	case <-acceptDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("relay did not terminate after the tampered-prologue handshake failed")
+	}
+}
+
 // AcceptReceive: relay delivers blobs sent via the deliver channel.
 func TestAcceptReceive_DeliversBlobs(t *testing.T) {
 	relayKey, _ := noise.DH25519.GenerateKeypair(nil)
