@@ -9,15 +9,26 @@ package main
 
 import (
 	"flag"
+	"io"
+	"strings"
 	"testing"
 )
 
 func TestReleaseBuildDefinesNoHostileFlag(t *testing.T) {
-	if got := registerHostileFlag(); got != nil {
+	// A fresh FlagSet mirrors serve()'s registration without touching the
+	// global CommandLine (a redefinition there would panic under -count=2).
+	fs := flag.NewFlagSet("release-check", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	if got := registerHostileFlag(fs); got != nil {
 		t.Fatalf("release build must not register -hostile-control")
 	}
-	if flag.CommandLine.Lookup("hostile-control") != nil {
+	if fs.Lookup("hostile-control") != nil {
 		t.Fatalf("release build must not define -hostile-control")
+	}
+	// The runtime enrollment path is absent: passing the flag fails loudly.
+	err := fs.Parse([]string{"-hostile-control", "127.0.0.1:1"})
+	if err == nil || !strings.Contains(err.Error(), "not defined") {
+		t.Fatalf("release build must reject -hostile-control as undefined, got: %v", err)
 	}
 }
 

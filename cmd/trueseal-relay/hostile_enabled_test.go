@@ -17,11 +17,17 @@ import (
 )
 
 func TestHostileBuildDefinesTheFlag(t *testing.T) {
-	if got := registerHostileFlag(); got == nil {
+	// A fresh FlagSet: registering on the global CommandLine would panic
+	// on redefinition under -count=2.
+	fs := flag.NewFlagSet("hostile-check", flag.ContinueOnError)
+	if got := registerHostileFlag(fs); got == nil {
 		t.Fatalf("hostile build must register -hostile-control")
 	}
-	if flag.CommandLine.Lookup("hostile-control") == nil {
+	if fs.Lookup("hostile-control") == nil {
 		t.Fatalf("hostile build: -hostile-control not registered")
+	}
+	if err := fs.Parse([]string{"-hostile-control", "127.0.0.1:0"}); err != nil {
+		t.Fatalf("hostile build must accept -hostile-control: %v", err)
 	}
 }
 

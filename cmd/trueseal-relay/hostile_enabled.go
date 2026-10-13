@@ -17,10 +17,12 @@ import (
 // surface: the -hostile-control flag is registered here, and without the
 // tag neither the flag nor internal/hostile exists.
 
-// registerHostileFlag defines the -hostile-control flag (hostile builds
-// only). TRUESEAL_RELAY_HOSTILE_CONTROL overrides it.
-func registerHostileFlag() *string {
-	return flag.String("hostile-control", "", "hostile test build only: loopback address for the e2e control listener (e.g. 127.0.0.1:7703); also TRUESEAL_RELAY_HOSTILE_CONTROL")
+// registerHostileFlag defines the -hostile-control flag on fs (hostile
+// builds only). TRUESEAL_RELAY_HOSTILE_CONTROL overrides it. Takes the
+// FlagSet so tests use a fresh one — redefining a flag on the global
+// CommandLine panics under -count=2.
+func registerHostileFlag(fs *flag.FlagSet) *string {
+	return fs.String("hostile-control", "", "hostile test build only: loopback address for the e2e control listener (e.g. 127.0.0.1:7703); also TRUESEAL_RELAY_HOSTILE_CONTROL")
 }
 
 // maybeStartHostile installs the hostile engine on the router and starts

@@ -276,7 +276,7 @@ func serve(args []string) {
 	devFlag := flag.Bool("dev", false, "dev logging mode: verbose per-message logs (never IP addresses); also TRUESEAL_RELAY_DEV=1")
 	// RELAY-14: -hostile-control exists ONLY in `hostile` tag builds; in a
 	// release build no such flag is defined and this returns nil.
-	hostileControl := registerHostileFlag()
+	hostileControl := registerHostileFlag(flag.CommandLine)
 	flag.CommandLine.Parse(args)
 
 	// A positional argument means the caller's intent was lost — the doubled

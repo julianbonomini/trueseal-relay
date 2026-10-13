@@ -3,6 +3,8 @@
 package main
 
 import (
+	"flag"
+
 	"github.com/julianbonomini/trueseal-relay/internal/logging"
 	"github.com/julianbonomini/trueseal-relay/internal/relay"
 )
@@ -15,7 +17,7 @@ import (
 
 // registerHostileFlag (release): no flag. A release binary cannot be
 // enrolled into hostile behaviour at runtime.
-func registerHostileFlag() *string { return nil }
+func registerHostileFlag(_ *flag.FlagSet) *string { return nil }
 
 // maybeStartHostile (release): a no-op.
 func maybeStartHostile(_ *relay.Router, _ *logging.Logger, _ *string) func() {

@@ -331,8 +331,10 @@ func (p *pipe) run(ctx context.Context, e *Engine, in <-chan relay.DeliveryBlob)
 				return
 			}
 		case b := <-p.injectCh:
-			// Injected blobs bypass drop/reorder (the harness asked for
-			// this exact blob now) but are recorded for replay.
+			// Injected blobs bypass ALL rules — drop, corrupt, duplicate AND
+			// reorder: the harness asked for these exact bytes, delivered
+			// now, verbatim. They are still recorded in history, so a later
+			// replay re-sends them like any delivered blob.
 			if !p.send(ctx, b) {
 				return
 			}

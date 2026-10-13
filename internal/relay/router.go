@@ -57,6 +57,14 @@ type Router struct {
 	// `hostile` build tag — release builds have no way to install one: the
 	// setter exists only in wrap_hostile.go, and wrapDelivery (paired
 	// files) is an inlined passthrough without the tag.
+	//
+	// STANDING RULE: never add an untagged setter for this field, and never
+	// widen the tag on wrap_hostile.go. The release-safety property
+	// (a shipped binary cannot be enrolled into hostile behaviour) rests
+	// entirely on the setter's absence from !hostile builds — CI's nm
+	// check and the Dockerfile's unstripped-intermediate check both assume
+	// it. A future legitimate knob belongs behind its own build tag, with
+	// the same paired-file pattern.
 	wrapper DeliveryWrapper
 }
 
