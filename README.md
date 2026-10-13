@@ -122,6 +122,28 @@ TRUESEAL_RELAY_KEYPAIR_HEX=your_hex_key_here
 
 ---
 
+### Upgrading and the inbox store
+
+The relay's inbox store (`inbox.db`) carries a **Store Version** (ADR-0013), checked at every start. Upgrading is pull-and-restart:
+
+- **Same or older store** — the relay starts. A store from before versioning is adopted as version 1 (data untouched); an older versioned store is migrated forward in one transaction, so a crash mid-migration leaves the old store intact and the next start retries.
+- **Newer store** (you downgraded the image) — the relay refuses to start and leaves the store byte-for-byte unchanged:
+  `inbox store version N is newer than this relay supports (store version M) — refusing to start, store left unchanged; upgrade the relay`.
+  Run the newer image again; the store is fine.
+- **Unmigratable store** — the relay refuses with a line naming both versions and leaves the store unchanged. Restore from the pre-upgrade state or wait for a Store Reset release.
+
+**Store Reset releases.** Rarely, a release's notes declare a *relay Store Reset* — its format changed incompatibly. On such a release the relay refuses to start on an older store until the operator passes `-reset-store`, which **drops every inbox** (up to 30 days of undelivered blobs — senders will not resend) and keeps the keypair, so clients stay configured:
+
+```sh
+docker compose run --rm relay -reset-store
+```
+
+On any release that does *not* declare a Store Reset, `-reset-store` is refused before the store is touched. The startup log always names the running store version, e.g. `inbox store: sqlite, store version 1`.
+
+The Postgres backend is experimental (ADR-0012); store versioning applies to the supported SQLite backend only.
+
+---
+
 ### Public logs
 
 All relay logs are publicly readable at `https://logs.yourdomain.com` (Dozzle). This is intentional — logs contain no IP addresses, no sender identities, no content. Anyone can audit that the relay is blind.
