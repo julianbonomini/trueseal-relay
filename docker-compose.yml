@@ -1,7 +1,21 @@
+# trueseal-relay — the shipped, supported single-Node deployment (ADR-0012).
+#
+# Relay-only on purpose: no log viewer, no reverse proxy, no Docker socket
+# mount. Logs are private to the Operator (normal mode carries no client
+# metadata at all; verbose logging exists only as the explicit per-invocation
+# dev mode). Health stays on the container network — Docker's own
+# HEALTHCHECK uses it (RELAY-10). The experimental Postgres cluster lives in
+# experimental/ and is NOT a supported preview deployment.
+#
+# The image is pinned to an exact version. G8 forbids a `:latest` default:
+# set RELAY_IMAGE in .env to the version the Compatibility Table lists for
+# your TrueSeal Release, e.g.
+#   RELAY_IMAGE=ghcr.io/julianbonomini/trueseal-relay:v0.2.0
+
 services:
   relay:
-    build: .   # used locally; VPS pulls pre-built image from GHCR via CI
-    image: ${RELAY_IMAGE:-ghcr.io/julianbonomini/trueseal-relay:latest}
+    build: .   # used locally; production pulls the pinned image from GHCR
+    image: ${RELAY_IMAGE:?Set RELAY_IMAGE in .env to an exact tag, e.g. ghcr.io/julianbonomini/trueseal-relay:v0.2.0 — :latest is never a valid value}
     restart: unless-stopped
     # Above the 10 s graceful-shutdown drain (ADR-0012; TRUESEAL_RELAY_SHUTDOWN_DRAIN),
     # so SIGKILL never interrupts an in-flight commit the drain would have finished.
@@ -23,39 +37,6 @@ services:
       # TRUESEAL_RELAY_MAX_CONNECTIONS: "1000"
     command: ["-no-config"]
 
-  caddy:
-    image: caddy:2-alpine
-    restart: unless-stopped
-    profiles: [production]
-    ports:
-      - "80:80"     # HTTP → HTTPS redirect + ACME challenge
-      - "443:443"   # HTTPS
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy-data:/data
-      - caddy-config:/config
-    environment:
-      RELAY_DOMAIN: ${RELAY_DOMAIN}
-      LOGS_DOMAIN: ${LOGS_DOMAIN}
-      HEALTH_UPSTREAM: relay:7702
-    depends_on:
-      - relay
-      - dozzle
-
-  dozzle:
-    image: amir20/dozzle:latest
-    restart: unless-stopped
-    ports:
-      - "8080:8080"   # Log viewer — local testing only (Caddy proxies this in prod)
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    environment:
-      DOZZLE_NO_AUTH: "true"   # public read-only log viewer
-
 volumes:
   relay-data:
-    driver: local
-  caddy-data:
-    driver: local
-  caddy-config:
     driver: local

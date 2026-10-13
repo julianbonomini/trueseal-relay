@@ -1,0 +1,160 @@
+name: Candidate
+
+# e2e ADR-0002: the relay candidate is a multi-arch GHCR image built FROM A
+# COMMIT, never a tag, and pushed so the Release Manifest can reference its
+# DIGEST. No image tag and no git tag is published here — promotion is a
+# separate dispatch (promote.yml) that tags the identical digest without a
+# rebuild. The Release Conductor (trueseal-e2e) starts this with the commit
+# and target version; a maintainer can do the same by hand:
+#   gh workflow run candidate.yml -f commit=<sha> -f version=0.2.0
+#
+# Digest-only note (recorded deviation): ADR-0002 says "pushed by digest
+# only". A registry manifest must carry SOME tag to be stored, so the image
+# is pushed under the content-bound, single-use tag `sha-<full commit>` —
+# never a version, never `latest` — and every downstream reference (the
+# Release Manifest, promotion, the attestation) uses the DIGEST. The
+# `sha-<commit>` tag is an implementation detail of GHCR storage, not a
+# release channel.
+#
+# Hostile-exclusion: the image build runs the RELAY-14 gate INSIDE the
+# Dockerfile for every architecture (unstripped intermediate build, then
+# `go tool nm` must show zero internal/hostile symbols — the check can
+# genuinely fail; never nm a stripped artifact). The workflow repeats the
+# same check on the runner for both target architectures before any push,
+# so a hostile surface can never reach GHCR even if the Dockerfile gate
+# were bypassed.
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: "Full commit SHA to build the candidate image from"
+        required: true
+        type: string
+      version:
+        description: "Target relay version, e.g. 0.2.0 (no leading v)"
+        required: true
+        type: string
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/trueseal-relay
+
+concurrency:
+  group: candidate-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build, gate, attest and push the candidate image (digest only)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write      # push to GHCR
+      id-token: write      # OIDC for the build provenance attestation
+      attestations: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - name: Validate the inputs
+        run: |
+          echo "${{ inputs.version }}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            || { echo "FAIL: version must be X.Y.Z without a leading v"; exit 1; }
+          echo "${{ inputs.commit }}" | grep -qE '^[0-9a-f]{40}$' \
+            || { echo "FAIL: commit must be a full 40-char SHA"; exit 1; }
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit }}
+
+      # G9 metadata (the relay carries no in-code version; its independent
+      # version line lives in the image tag applied at promotion). License
+      # metadata is the one G9 check with bytes in this repo.
+      - name: G9 — Apache-2.0 LICENSE present
+        run: |
+          [ -f LICENSE ] || { echo "FAIL: LICENSE missing"; exit 1; }
+          head -1 LICENSE | grep -qi "apache" \
+            || { echo "FAIL: LICENSE is not Apache-2.0"; exit 1; }
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # RELAY-14 / RELAY-15: prove on the runner, for BOTH target
+      # architectures, that a normal build carries no Hostile Relay surface
+      # — BEFORE anything is pushed. Unstripped intermediate builds only;
+      # an nm check on a stripped artifact succeeds vacuously.
+      - name: Hostile-exclusion gate (amd64 + arm64, unstripped)
+        run: |
+          for ARCH in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH=$ARCH \
+              go build -trimpath -o "/tmp/nm-check-$ARCH" ./cmd/trueseal-relay
+            if go tool nm "/tmp/nm-check-$ARCH" | grep -q "internal/hostile"; then
+              echo "::error::linux/$ARCH build contains hostile hook symbols"
+              exit 1
+            fi
+            echo "OK: linux/$ARCH — zero internal/hostile symbols"
+          done
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The Dockerfile runs the same hostile-exclusion nm gate per-arch
+      # inside the build; this push can never produce a stripped-artifact
+      # bypass. Tag is the content-bound sha-<commit>, never a version.
+      - name: Build and push the multi-arch image (digest only)
+        id: push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ env.IMAGE }}:sha-${{ inputs.commit }}
+
+      - name: Attest build provenance (push the attestation to GHCR)
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      # The completion bar: the candidate image by digest passes
+      # `gh attestation verify`.
+      - name: Verify the attestation resolves against the digest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh attestation verify \
+            "oci://${{ env.IMAGE }}@${{ steps.push.outputs.digest }}" \
+            --repo ${{ github.repository }}
+
+      # The Release Manifest line for the Release Conductor (E2E-8): the
+      # relay's candidate pin is this digest, built from this commit.
+      - name: Emit the Release Manifest entry
+        run: |
+          mkdir -p /tmp/manifest
+          cat > /tmp/manifest/relay-candidate.txt <<EOF
+          repo: ${{ github.repository }}
+          kind: ghcr-image
+          version: ${{ inputs.version }}
+          commit: ${{ inputs.commit }}
+          image: ${{ env.IMAGE }}@${{ steps.push.outputs.digest }}
+          platforms: linux/amd64,linux/arm64
+          attestation: gh attestation verify oci://${{ env.IMAGE }}@${{ steps.push.outputs.digest }} --repo ${{ github.repository }}
+          promote: gh workflow run promote.yml -f version=${{ inputs.version }} -f digest=${{ steps.push.outputs.digest }}
+          EOF
+          cat /tmp/manifest/relay-candidate.txt
+          cat /tmp/manifest/relay-candidate.txt >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the manifest entry as an artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: relay-candidate-${{ inputs.version }}
+          path: /tmp/manifest/relay-candidate.txt
+          if-no-files-found: error

@@ -1,52 +1,104 @@
 name: Deploy
 
+# MANUAL ONLY. Nothing in this repository triggers a deploy — no tag push,
+# no release, no promotion (e2e ADR-0002: "a release never touches
+# infrastructure"; deploying needs an explicit, separate decision). This
+# workflow deploys an EXACT, already-promoted relay version to the
+# maintainer's VPS. `latest` is refused.
+#
+# Maintainer provisioning (one-time, repo secrets — the workflow fails
+# fast if they are absent; it never invents hosts):
+#   VPS_HOST       — VPS IP or hostname
+#   VPS_USER       — SSH user
+#   DEPLOY_SSH_KEY — private half of a deploy SSH keypair (public half in
+#                    ~/.ssh/authorized_keys on the VPS)
+# The VPS itself needs: Docker + the compose plugin, ~/trueseal-relay/
+# containing this repo's docker-compose.yml and a .env whose RELAY_IMAGE
+# the deploy overrides with the exact version.
+#
+# Run: gh workflow run deploy.yml -f version=0.2.0
+
 on:
-  push:
-    tags:
-      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Exact published relay version to deploy, e.g. 0.2.0 (no leading v; 'latest' is refused)"
+        required: true
+        type: string
 
 env:
-  REGISTRY: ghcr.io
   IMAGE: ghcr.io/${{ github.repository_owner }}/trueseal-relay
+
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: false
 
 jobs:
   deploy:
+    name: verify the exact image + deploy to the VPS
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write   # push to GHCR
-
+      packages: read    # resolve the image + verify the attestation
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Validate the version — exact, published, never latest
+        run: |
+          V="${{ inputs.version }}"
+          case "$V" in
+            latest|LATEST|*latest*) echo "FAIL: 'latest' is never deployable — pass an exact X.Y.Z"; exit 1;;
+          esac
+          echo "$V" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            || { echo "FAIL: version must be an exact X.Y.Z without a leading v"; exit 1; }
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to GHCR
+      - name: Log in to GHCR (read-only)
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: |
-            ${{ env.IMAGE }}:${{ github.ref_name }}
-            ${{ env.IMAGE }}:latest
+      - name: Resolve and record the deployed digest
+        run: |
+          docker buildx imagetools inspect "${{ env.IMAGE }}:v${{ inputs.version }}" > /tmp/image.txt \
+            || { echo "FAIL: no image v${{ inputs.version }} — promote it first (promote.yml)"; exit 1; }
+          DIGEST=$(grep -oE 'sha256:[0-9a-f]{64}' /tmp/image.txt | head -1)
+          echo "deploying v${{ inputs.version }} = $DIGEST"
+          echo "digest=$DIGEST" >> "$GITHUB_ENV"
 
-      - name: Deploy to VPS
+      # Deploy only bytes the candidate pipeline attested — the same check
+      # promote.yml ran, repeated at the point of consequence.
+      - name: Verify build provenance on the exact image
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh attestation verify \
+            "oci://${{ env.IMAGE }}:v${{ inputs.version }}" \
+            --repo ${{ github.repository }}
+
+      - name: Fail fast without provisioned secrets (never invent hosts)
+        run: |
+          for S in VPS_HOST VPS_USER DEPLOY_SSH_KEY; do
+            case "$S" in
+              VPS_HOST)       [ -n "${{ secrets.VPS_HOST }}" ]       || MISSING="$MISSING $S";;
+              VPS_USER)       [ -n "${{ secrets.VPS_USER }}" ]       || MISSING="$MISSING $S";;
+              DEPLOY_SSH_KEY) [ -n "${{ secrets.DEPLOY_SSH_KEY }}" ] || MISSING="$MISSING $S";;
+            esac
+          done
+          [ -z "$MISSING" ] || { echo "FAIL: provision these repo secrets first:$MISSING"; exit 1; }
+
+      - name: Deploy the exact version to the VPS
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           script: |
+            set -e
             cd ~/trueseal-relay
-            RELAY_IMAGE=${{ env.IMAGE }}:${{ github.ref_name }} docker compose pull relay
-            RELAY_IMAGE=${{ env.IMAGE }}:${{ github.ref_name }} docker compose up -d --no-build
+            export RELAY_IMAGE="${{ env.IMAGE }}:v${{ inputs.version }}"
+            docker compose pull relay
+            docker compose up -d --no-build
+            echo "deployed $RELAY_IMAGE"
