@@ -64,7 +64,17 @@ func AcceptReceive(conn net.Conn, relayKey noise.DHKey, handler Handler) error {
 // error. The writer also gets d.Write as a per-write deadline so a stalled
 // client cannot pin the writer goroutine (the RELAY-2 review follow-up).
 func AcceptReceiveWithDeadlines(conn net.Conn, relayKey noise.DHKey, handler Handler, d Deadlines) error {
-	err := acceptReceiveSession(conn, relayKey, handler, d)
+	return AcceptReceiveWithContext(context.Background(), conn, relayKey, handler, d)
+}
+
+// AcceptReceiveWithContext is AcceptReceiveWithDeadlines with a parent
+// context (RELAY-11): when ctx is cancelled — the graceful-shutdown drain
+// cancels every Receive Session (ADR-0012 step 3) — the connection is
+// closed, which unblocks any pending read, even mid-handshake, and the
+// session ends as an ordinary close. The same ctx scopes the handler
+// callbacks (OnReceiveConnect's delivery goroutine exits on it).
+func AcceptReceiveWithContext(ctx context.Context, conn net.Conn, relayKey noise.DHKey, handler Handler, d Deadlines) error {
+	err := acceptReceiveSession(ctx, conn, relayKey, handler, d)
 	if isTimeoutErr(err) {
 		// A deadline close is policy (ADR-0012), not a failure: an idle
 		// connector must not surface as a per-connection error log.
@@ -73,8 +83,21 @@ func AcceptReceiveWithDeadlines(conn net.Conn, relayKey noise.DHKey, handler Han
 	return err
 }
 
-func acceptReceiveSession(conn net.Conn, relayKey noise.DHKey, handler Handler, d Deadlines) error {
+func acceptReceiveSession(parent context.Context, conn net.Conn, relayKey noise.DHKey, handler Handler, d Deadlines) error {
 	defer conn.Close()
+
+	// RELAY-11: the session context derives from the caller's parent (the
+	// server's shutdown-scoped Receive Session context). A watcher closes
+	// the conn on cancellation so a pending read unblocks promptly; the
+	// read loop treats the resulting closed-conn error as an ordinary
+	// session end. The deferred cancel makes the watcher exit on every
+	// return path — no goroutine outlives the session.
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+	go func() {
+		<-ctx.Done()
+		conn.Close()
+	}()
 	if d.Handshake > 0 {
 		// One absolute deadline covers the prefix read and all three XX
 		// flights; the prefix read can no longer hang on its own (RELAY-6
@@ -146,9 +169,6 @@ func acceptReceiveSession(conn net.Conn, relayKey noise.DHKey, handler Handler, 
 	// RELAY-9: dev-mode session lifecycle detail — a key PREFIX only
 	// (ADR-0012), never an address.
 	logg().Debugf("recv: XX handshake complete key=%x", deviceKey[:4])
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	// stop shuts down the writer and the deliver goroutine when AcceptReceive
 	// returns. Deferred before any return path below.

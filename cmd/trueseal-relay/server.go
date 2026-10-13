@@ -50,10 +50,26 @@ type server struct {
 	healthSrv      *http.Server
 	reaperCancel   context.CancelFunc
 
+	// RELAY-11: session contexts derive from two shutdown-scoped parents,
+	// one per kind, so the drain can cut them independently per ADR-0012:
+	// pushes only after the drain budget (step 2), Receive Sessions at
+	// step 3. Cancellation closes the session's conn, unblocking its read.
+	pushCtx    context.Context
+	pushCancel context.CancelFunc
+	recvCtx    context.Context
+	recvCancel context.CancelFunc
+
 	acceptWG sync.WaitGroup // accept loops
-	sessWG   sync.WaitGroup // session goroutines
+	pushWG   sync.WaitGroup // Push Session goroutines
+	recvWG   sync.WaitGroup // Receive Session goroutines
 	errLog   *sessionErrorLog
 }
+
+// shutdownHardGrace bounds the final wait after every session context has
+// been cancelled. Cancellation closes the session conns, so a session
+// exits in milliseconds; this is only a last-resort bound so shutdown
+// always returns (the store closes after it, Docker SIGKILLs after that).
+const shutdownHardGrace = 5 * time.Second
 
 func newServer(cfg config.RelayConfig, relayKey noise.DHKey, inbox store.InboxStore, handler session.Handler, reaper *store.Reaper, logg *logging.Logger) *server {
 	if logg == nil {
@@ -119,22 +135,26 @@ func (s *server) start() error {
 	s.reaperCancel = reaperCancel
 	go s.reaper.Run(reaperCtx)
 
+	s.pushCtx, s.pushCancel = context.WithCancel(context.Background())
+	s.recvCtx, s.recvCancel = context.WithCancel(context.Background())
+
 	s.acceptWG.Add(2)
-	go s.acceptLoop(s.pushLn, "push", s.pushSem, session.AcceptPushWithDeadlines)
-	go s.acceptLoop(s.recvLn, "receive", s.recvSem, session.AcceptReceiveWithDeadlines)
+	go s.acceptLoop(s.pushLn, "push", s.pushSem, s.pushCtx, &s.pushWG, session.AcceptPushWithContext)
+	go s.acceptLoop(s.recvLn, "receive", s.recvSem, s.recvCtx, &s.recvWG, session.AcceptReceiveWithContext)
 	return nil
 }
 
 // acceptFn is one session-kind entry point (push or receive).
-type acceptFn func(net.Conn, noise.DHKey, session.Handler, session.Deadlines) error
+type acceptFn func(context.Context, net.Conn, noise.DHKey, session.Handler, session.Deadlines) error
 
 // acceptLoop accepts until the listener is closed, then returns. Each
 // accepted connection is capped by the listener's semaphore (a nil
-// semaphore never refuses) and served on its own goroutine tracked by
-// sessWG. ADR-0012: a refused connection is closed silently — counted,
-// surfaced only in dev mode (RELAY-9); a session error is rate-limited and
+// semaphore never refuses) and served on its own goroutine tracked by the
+// kind's WaitGroup, with the kind's shutdown-scoped context (RELAY-11).
+// ADR-0012: a refused connection is closed silently — counted, surfaced
+// only in dev mode (RELAY-9); a session error is rate-limited and
 // field-free (it can wrap a peer address).
-func (s *server) acceptLoop(ln net.Listener, kind string, sem chan struct{}, accept acceptFn) {
+func (s *server) acceptLoop(ln net.Listener, kind string, sem chan struct{}, kindCtx context.Context, kindWG *sync.WaitGroup, accept acceptFn) {
 	defer s.acceptWG.Done()
 	for {
 		conn, err := ln.Accept()
@@ -145,27 +165,34 @@ func (s *server) acceptLoop(ln net.Listener, kind string, sem chan struct{}, acc
 			select {
 			case sem <- struct{}{}:
 			default:
-				n := refusalCounters.push.Add(1)
+				var n int64
+				if kind == "push" {
+					n = refusalCounters.push.Add(1)
+				} else {
+					n = refusalCounters.recv.Add(1)
+				}
 				s.log.Debugf("%s: connection limit reached — connection refused (total %d)", kind, n)
 				conn.Close()
 				continue
 			}
 		}
-		s.sessWG.Add(1)
+		kindWG.Add(1)
 		go func(c net.Conn) {
-			defer s.sessWG.Done()
+			defer kindWG.Done()
 			if sem != nil {
 				defer func() { <-sem }()
 			}
-			if err := accept(c, s.relayKey, s.handler, s.deadlines); err != nil {
+			if err := accept(kindCtx, c, s.relayKey, s.handler, s.deadlines); err != nil {
 				s.errLog.logf(kind, err)
 			}
 		}(conn)
 	}
 }
 
-// shutdown drains the server. It does not return until every session
-// goroutine has finished or the drain budget has been exceeded.
+// shutdown drains the server in ADR-0012 order. It does not return until
+// every session goroutine has finished (or cancellation plus the hard
+// grace has force-ended the wait), so the caller's store close happens
+// only after every session has stopped.
 func (s *server) shutdown() {
 	// 1. Stop the health endpoint first: an orchestrator (the Docker
 	// HEALTHCHECK, a load balancer) must see the Node leave service before
@@ -179,18 +206,40 @@ func (s *server) shutdown() {
 	s.recvLn.Close()
 	s.acceptWG.Wait()
 
-	// 3. Drain in-flight sessions, bounded by the configured budget.
-	log.Printf("shutting down — draining active sessions (%s timeout)", s.drain)
-	done := make(chan struct{})
-	go func() { s.sessWG.Wait(); close(done) }()
+	// 3. Let pushes whose writes are in progress commit and send their
+	// Ack, for at most the drain budget (ADR-0012 step 2 — 10 s, the
+	// operator-configurable shutdown_drain). A push that finishes early
+	// ends the wait early; a push stalled past the budget is cancelled
+	// below — cut off with no Ack, so the sender retries.
+	log.Printf("shutting down — draining in-flight pushes (%s budget)", s.drain)
+	pushDone := make(chan struct{})
+	go func() { s.pushWG.Wait(); close(pushDone) }()
 	select {
-	case <-done:
-		log.Printf("all sessions drained cleanly")
+	case <-pushDone:
+		log.Printf("in-flight pushes drained")
 	case <-time.After(s.drain):
-		log.Printf("shutdown timeout — forcing exit")
+		log.Printf("push drain budget exceeded — cutting stalled pushes")
 	}
 
-	// 4. Stop the reaper. The caller closes the store after shutdown
-	// returns.
+	// 4. Cancel every Receive Session (ADR-0012 step 3): the session ctx
+	// closes the conn, the pending read unblocks, un-acked Blobs stay in
+	// their Inbox and are re-delivered on reconnect (client dedup absorbs
+	// the repeat — ADR-0009). Then cut any push still running.
+	s.recvCancel()
+	s.pushCancel()
+
+	// 5. Wait for every session goroutine to observe its cancellation and
+	// exit — bounded by the hard grace so shutdown always returns.
+	allDone := make(chan struct{})
+	go func() { s.recvWG.Wait(); s.pushWG.Wait(); close(allDone) }()
+	select {
+	case <-allDone:
+		log.Printf("all sessions stopped")
+	case <-time.After(shutdownHardGrace):
+		log.Printf("shutdown hard grace exceeded — forcing exit")
+	}
+
+	// 6. Stop the reaper. The caller closes the store after shutdown
+	// returns (ADR-0012 step 4).
 	s.reaperCancel()
 }
