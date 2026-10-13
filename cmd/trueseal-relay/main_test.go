@@ -40,6 +40,20 @@ func serveEnv(t *testing.T, keyPath string) []string {
 	}
 }
 
+// commandEnv is serveEnv for the pubkey/address subcommands: valid fixed
+// ports (the subcommands never bind them, but address advertises them).
+func commandEnv(t *testing.T, keyPath string) []string {
+	t.Helper()
+	dir := filepath.Dir(keyPath)
+	return []string{
+		"TRUESEAL_RELAY_KEYPAIR_PATH=" + keyPath,
+		"TRUESEAL_RELAY_STORE_SQLITE_PATH=" + filepath.Join(dir, "inbox.db"),
+		"TRUESEAL_RELAY_LISTEN_RECEIVE=127.0.0.1:7700",
+		"TRUESEAL_RELAY_LISTEN_PUSH=127.0.0.1:7701",
+		"TRUESEAL_RELAY_LISTEN_HEALTH=127.0.0.1:7702",
+	}
+}
+
 // RED (RELAY-12, completion criterion 1+2): the bare binary's documented
 // first start must generate a keypair at mode 0600 and log the public key.
 // Today it dies at keypair.Load, and only the Docker entrypoint generated
@@ -122,7 +136,7 @@ func TestAddress_MatchesADR0028Grammar(t *testing.T) {
 	run := func(extraEnv []string, args ...string) string {
 		t.Helper()
 		cmd := exec.Command(bin, args...)
-		cmd.Env = append(os.Environ(), append(serveEnv(t, keyPath), extraEnv...)...)
+		cmd.Env = append(os.Environ(), append(commandEnv(t, keyPath), extraEnv...)...)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("address %v exited %v: %s", args, err, out)
@@ -200,10 +214,9 @@ func TestEntrypoint_PassesSubcommandThrough(t *testing.T) {
 
 	script := filepath.Join("..", "..", "docker", "entrypoint.sh")
 	cmd := exec.Command("sh", script, "pubkey")
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(os.Environ(), append(commandEnv(t, keyPath),
 		"RELAY_BINARY="+bin,
-		"TRUESEAL_RELAY_KEYPAIR_PATH="+keyPath,
-	)
+	)...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("entrypoint pubkey exited %v: %s", err, out)
@@ -228,10 +241,9 @@ func TestPubkey_PrefersEnvKeypairHex(t *testing.T) {
 	}
 
 	cmd := exec.Command(bin, "pubkey")
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(os.Environ(), append(commandEnv(t, filePath),
 		"TRUESEAL_RELAY_KEYPAIR_HEX="+envKey,
-		"TRUESEAL_RELAY_KEYPAIR_PATH="+filePath,
-	)
+	)...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("pubkey exited %v: %s", err, out)

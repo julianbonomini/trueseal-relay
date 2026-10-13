@@ -31,7 +31,134 @@ func logConnectionRefused(kind string, max int) {
 	log.Printf("%s: connection limit reached (%d) — rejecting connection", kind, max)
 }
 
+// usage lists the subcommands. RELAY-12: keypair operations are subcommands,
+// so they cannot be silently swallowed by flag parsing the way the doubled
+// Docker entrypoint path swallowed -genkey.
+const usage = `trueseal-relay — blind ciphertext relay
+
+Usage:
+  trueseal-relay [flags]                 run the relay (generates the keypair on first start)
+  trueseal-relay pubkey [flags]          print the relay public key (hex) that clients configure
+  trueseal-relay address --host H [flags] print the Relay Address (sync ADR-0028 grammar)
+  trueseal-relay genkey [flags]          generate a keypair file and exit (never overwrites)
+
+Flags (run): -config <path> (default relay.toml), -no-config (env vars only)
+`
+
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "pubkey":
+			runPubkey(os.Args[2:])
+			return
+		case "address":
+			runAddress(os.Args[2:])
+			return
+		case "genkey":
+			runGenkey(os.Args[2:])
+			return
+		case "help", "-h", "--help":
+			fmt.Print(usage)
+			return
+		}
+	}
+	serve(os.Args[1:])
+}
+
+// configFlags parses the shared -config/-no-config flags used by the relay
+// and its subcommands.
+func configFlags(args []string) (configPath string) {
+	fs := flag.NewFlagSet("trueseal-relay", flag.ExitOnError)
+	cfgPath := fs.String("config", "relay.toml", "path to TOML config file")
+	noConfig := fs.Bool("no-config", false, "skip config file loading; use env vars only (Docker-friendly)")
+	_ = fs.Parse(args)
+	if *noConfig {
+		return ""
+	}
+	return *cfgPath
+}
+
+// runPubkey prints the hex public key the Noise handshake uses — resolved
+// through the same path as serve (TRUESEAL_RELAY_KEYPAIR_HEX, then the file).
+func runPubkey(args []string) {
+	cfg, err := config.Load(configFlags(args))
+	if err != nil {
+		log.Fatalf("config: %v", err)
+	}
+	kp, _, err := keypair.Resolve(cfg.Relay.KeypairPath)
+	if err != nil {
+		log.Fatalf("keypair: %v", err)
+	}
+	fmt.Printf("%x\n", kp.Public)
+}
+
+// runAddress prints the Relay Address, trueseal://<pub hex>@host[:receivePort][?push=pushPort]
+// (sync ADR-0028). The relay cannot know its public host, so --host is
+// required. Ports always print explicitly — a port is never dropped silently.
+func runAddress(args []string) {
+	fs := flag.NewFlagSet("address", flag.ExitOnError)
+	host := fs.String("host", "", "public host name or address clients dial (required)")
+	cfgPath := fs.String("config", "relay.toml", "path to TOML config file")
+	noConfig := fs.Bool("no-config", false, "skip config file loading; use env vars only (Docker-friendly)")
+	_ = fs.Parse(args)
+	if *host == "" {
+		log.Fatalf("address: --host is required (the relay cannot know its public host)")
+	}
+	configPath := *cfgPath
+	if *noConfig {
+		configPath = ""
+	}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		log.Fatalf("config: %v", err)
+	}
+	kp, _, err := keypair.Resolve(cfg.Relay.KeypairPath)
+	if err != nil {
+		log.Fatalf("keypair: %v", err)
+	}
+	receivePort, err := listenPort(cfg.Relay.ListenReceive)
+	if err != nil {
+		log.Fatalf("address: %v", err)
+	}
+	pushPort, err := listenPort(cfg.Relay.ListenPush)
+	if err != nil {
+		log.Fatalf("address: %v", err)
+	}
+	fmt.Printf("trueseal://%x@%s:%s?push=%s\n", kp.Public, *host, receivePort, pushPort)
+}
+
+// listenPort extracts the port from a listen address like ":7700" or
+// "0.0.0.0:7700".
+func listenPort(addr string) (string, error) {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", fmt.Errorf("listen address %q has no port: %w", addr, err)
+	}
+	if port == "" || port == "0" {
+		return "", fmt.Errorf("listen address %q has no fixed port to advertise", addr)
+	}
+	return port, nil
+}
+
+// runGenkey generates a keypair file and exits. Create-exclusive: it refuses
+// to touch an existing file, so a stray genkey can never destroy the relay
+// key (RELAY-12).
+func runGenkey(args []string) {
+	fs := flag.NewFlagSet("genkey", flag.ExitOnError)
+	keyOut := fs.String("keyout", "keypair.hex", "keypair output path")
+	_ = fs.Parse(args)
+	if err := keypair.Generate(*keyOut); err != nil {
+		log.Fatalf("genkey: %v", err)
+	}
+	kp, err := keypair.Load(*keyOut)
+	if err != nil {
+		log.Fatalf("genkey load: %v", err)
+	}
+	fmt.Printf("keypair written to %s\n", *keyOut)
+	fmt.Printf("relay public key (share with clients): %x\n", kp.Public)
+}
+
+func serve(args []string) {
 	// Privacy (ADR-0012): logs carry no client metadata — no IP addresses, no
 	// keys or prefixes, no sizes, no Blob IDs, no per-session events. Only
 	// lifecycle events (startup, listener addresses, the relay's own public
@@ -42,21 +169,13 @@ func main() {
 	// Use this in Docker deployments where all settings are passed as environment
 	// variables and no config file is mounted into the container.
 	noConfig := flag.Bool("no-config", false, "skip config file loading; use env vars only (Docker-friendly)")
-	genKey := flag.Bool("genkey", false, "generate a new relay keypair and exit")
-	keyOut := flag.String("keyout", "keypair.hex", "keypair output path (used with -genkey)")
-	flag.Parse()
+	flag.CommandLine.Parse(args)
 
-	if *genKey {
-		if err := keypair.Generate(*keyOut); err != nil {
-			log.Fatalf("genkey: %v", err)
-		}
-		kp, err := keypair.Load(*keyOut)
-		if err != nil {
-			log.Fatalf("genkey load: %v", err)
-		}
-		fmt.Printf("keypair written to %s\n", *keyOut)
-		fmt.Printf("relay public key (share with clients): %x\n", kp.Public)
-		os.Exit(0)
+	// A positional argument means the caller's intent was lost — the doubled
+	// Docker entrypoint path turned '-genkey' into a silently-ignored arg and
+	// started a relay instead (RELAY-12). Fail loudly with guidance.
+	if flag.NArg() > 0 {
+		log.Fatalf("unexpected argument %q — did you mean a subcommand?\n\n%s", flag.Arg(0), usage)
 	}
 
 	configPath := *cfgPath
@@ -68,9 +187,16 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
-	kp, err := keypair.Load(cfg.Relay.KeypairPath)
+	// RELAY-12: first start generates the keypair (mode 0600) instead of
+	// failing; an operator-supplied TRUESEAL_RELAY_KEYPAIR_HEX wins. The
+	// private key material is never logged — the public key is a startup
+	// lifecycle field ADR-0012 explicitly allows.
+	kp, generated, err := keypair.Resolve(cfg.Relay.KeypairPath)
 	if err != nil {
 		log.Fatalf("keypair: %v", err)
+	}
+	if generated {
+		log.Printf("no keypair found at %s — generated a new relay keypair (mode 0600)", cfg.Relay.KeypairPath)
 	}
 	log.Printf("relay public key: %x", kp.Public)
 

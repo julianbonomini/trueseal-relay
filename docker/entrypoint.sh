@@ -1,21 +1,13 @@
 #!/bin/sh
 set -e
 
-KEYPAIR_PATH="${TRUESEAL_RELAY_KEYPAIR_PATH:-/data/keypair.hex}"
-
-# Operator-supplied keypair takes precedence over auto-generation.
-if [ -n "$TRUESEAL_RELAY_KEYPAIR_HEX" ]; then
-    echo "$TRUESEAL_RELAY_KEYPAIR_HEX" > "$KEYPAIR_PATH"
-    chmod 600 "$KEYPAIR_PATH"
-fi
-
-if [ ! -f "$KEYPAIR_PATH" ]; then
-    echo "No keypair found at $KEYPAIR_PATH — generating..."
-    /trueseal-relay -genkey -keyout "$KEYPAIR_PATH"
-    echo "Keypair generated. Share the public key above with your clients."
-fi
-
-# Enforce 0600 on the keypair file even if the umask was permissive at generation time.
-chmod 600 "$KEYPAIR_PATH"
-
-exec /trueseal-relay "$@"
+# All keypair handling lives in the binary (RELAY-12):
+#   - first start generates the keypair at mode 0600 (create-exclusive),
+#   - TRUESEAL_RELAY_KEYPAIR_HEX supplies an operator key directly,
+#   - `trueseal-relay pubkey` / `address --host H` print what clients need.
+# The entrypoint only execs, and "$@" goes straight to the binary — the old
+# doubled-path shape (`exec /trueseal-relay "$@"` receiving
+# "/trueseal-relay -genkey ...") made flag parsing silently drop -genkey.
+#
+# RELAY_BINARY is a test seam; the image always uses the default.
+exec "${RELAY_BINARY:-/trueseal-relay}" "$@"
