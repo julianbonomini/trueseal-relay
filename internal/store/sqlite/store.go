@@ -59,13 +59,49 @@ func (s *Store) Close() error {
 // Put stores an envelope in the inbox for recipientKey.
 // Does not deduplicate — see InboxStore.Put contract.
 func (s *Store) Put(ctx context.Context, recipientKey []byte, envelope []byte, ttl time.Duration) error {
+	return s.PutWithLimits(ctx, recipientKey, envelope, ttl, store.InboxLimits{})
+}
+
+// PutWithLimits is Put with an atomic occupancy check (RELAY-6; ADR-0012):
+// the COUNT/SUM probe and the INSERT run in one transaction, so concurrent
+// pushes on the single-writer SQLite store cannot both pass the check and
+// overshoot the quota. A refusal wraps store.ErrInboxFull and stores
+// nothing. Only blobs that still occupy the Inbox count — reaped and
+// delivered-and-acked rows are already gone.
+func (s *Store) PutWithLimits(ctx context.Context, recipientKey []byte, envelope []byte, ttl time.Duration, limits store.InboxLimits) error {
 	expiresAt := time.Now().Add(ttl).Unix()
-	_, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("sqlite: put begin: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after Commit
+
+	if limits.MaxBlobs > 0 || limits.MaxBytes > 0 {
+		var blobs, bytes int64
+		err := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*), COALESCE(SUM(LENGTH(envelope)), 0) FROM inbox WHERE recipient = ?`,
+			recipientKey,
+		).Scan(&blobs, &bytes)
+		if err != nil {
+			return fmt.Errorf("sqlite: put probe: %w", err)
+		}
+		if limits.MaxBlobs > 0 && blobs >= limits.MaxBlobs {
+			return fmt.Errorf("%w: %d blobs (limit %d)", store.ErrInboxFull, blobs, limits.MaxBlobs)
+		}
+		if limits.MaxBytes > 0 && bytes+int64(len(envelope)) > limits.MaxBytes {
+			return fmt.Errorf("%w: %d+%d bytes (limit %d)", store.ErrInboxFull, bytes, len(envelope), limits.MaxBytes)
+		}
+	}
+
+	_, err = tx.ExecContext(ctx,
 		`INSERT INTO inbox (recipient, envelope, expires_at) VALUES (?, ?, ?)`,
 		recipientKey, envelope, expiresAt,
 	)
 	if err != nil {
 		return fmt.Errorf("sqlite: put: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("sqlite: put commit: %w", err)
 	}
 	return nil
 }

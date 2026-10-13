@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"time"
 
 	"github.com/flynn/noise"
 	"github.com/julianbonomini/trueseal-relay/internal/relay"
@@ -23,8 +24,38 @@ import (
 //
 // Returns when the connection closes or an unrecoverable error occurs.
 // Callers must use defer cancel() on the context passed to OnReceiveConnect.
+// No deadlines are applied; production wiring uses
+// AcceptReceiveWithDeadlines.
 func AcceptReceive(conn net.Conn, relayKey noise.DHKey, handler Handler) error {
+	return AcceptReceiveWithDeadlines(conn, relayKey, handler, Deadlines{})
+}
+
+// AcceptReceiveWithDeadlines is AcceptReceive with the ADR-0012 deadlines
+// (RELAY-6): the version-prefix read and Noise handshake must complete
+// within d.Handshake; afterwards the session closes after d.ReceiveIdle of
+// silence, where ANY inbound frame (Heartbeat, DeliverAck, even a
+// malformed one) resets the timer — mirroring the client's any-frame
+// liveness (SYNC-16). An idle close is ordinary (nil error), not a session
+// error. The writer also gets d.Write as a per-write deadline so a stalled
+// client cannot pin the writer goroutine (the RELAY-2 review follow-up).
+func AcceptReceiveWithDeadlines(conn net.Conn, relayKey noise.DHKey, handler Handler, d Deadlines) error {
+	err := acceptReceiveSession(conn, relayKey, handler, d)
+	if isTimeoutErr(err) {
+		// A deadline close is policy (ADR-0012), not a failure: an idle
+		// connector must not surface as a per-connection error log.
+		return nil
+	}
+	return err
+}
+
+func acceptReceiveSession(conn net.Conn, relayKey noise.DHKey, handler Handler, d Deadlines) error {
 	defer conn.Close()
+	if d.Handshake > 0 {
+		// One absolute deadline covers the prefix read and all three XX
+		// flights; the prefix read can no longer hang on its own (RELAY-6
+		// follow-up to RELAY-5).
+		_ = conn.SetDeadline(time.Now().Add(d.Handshake))
+	}
 
 	// ADR-0022: the Transport Version prefix precedes the handshake and is
 	// bound into it as the Noise prologue.
@@ -75,6 +106,14 @@ func AcceptReceive(conn net.Conn, relayKey noise.DHKey, handler Handler) error {
 		return formatErr("receive: read s,se msg", err)
 	}
 
+	// Handshake done — disarm the handshake deadline before registration
+	// and the session loop (the idle deadline is armed per-read below).
+	// Registration runs without a conn deadline: it does store work whose
+	// budget is its own, not the handshake's.
+	if d.Handshake > 0 {
+		_ = conn.SetDeadline(time.Time{})
+	}
+
 	// Extract device's static public key
 	var deviceKey relay.RecipientKey
 	copy(deviceKey[:], hs.PeerStatic())
@@ -99,7 +138,7 @@ func AcceptReceive(conn net.Conn, relayKey noise.DHKey, handler Handler) error {
 
 	// One writer per Receive Session: the sole owner of cs2 and the conn's
 	// write side. Deliver and Heartbeat-echo frames both go through it.
-	writer := newSessionWriter(conn, cs2, stop)
+	writer := newSessionWriter(conn, cs2, stop, d.Write)
 
 	// Deliver goroutine: send blobs from routing loop to device.
 	// send blocks while the writer is behind — that backpressure is intended;
@@ -115,9 +154,17 @@ func AcceptReceive(conn net.Conn, relayKey noise.DHKey, handler Handler) error {
 
 	// Receive loop: handle Heartbeat, drop unknown frames
 	for {
+		// ADR-0012: close after 75 s (default) with no frame received. ANY
+		// inbound frame resets the timer — a DeliverAck or even a malformed
+		// frame proves liveness exactly as a Heartbeat does.
+		if d.ReceiveIdle > 0 {
+			_ = conn.SetReadDeadline(time.Now().Add(d.ReceiveIdle))
+		}
 		raw, err := readNoiseMsg(conn)
 		if err != nil {
-			if err == io.EOF || isClosedErr(err) {
+			if err == io.EOF || isClosedErr(err) || isTimeoutErr(err) {
+				// Client close, writer-torn-down conn, or the idle deadline
+				// expired — all ordinary session ends (RELAY-6).
 				return nil
 			}
 			return formatErr("receive: read frame", err)

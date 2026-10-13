@@ -34,29 +34,59 @@ func (b *lockedBuf) String() string {
 	return b.buf.String()
 }
 
-// TestLogConnectionRefused_NoAddress is the RELAY-4 regression test for the
-// refused-connection path (issue #41, ADR-0012): the relay never logs a
-// client address, even when rejecting a connection at the limit.
-//
-// RED on the defect: the pre-fix refusal line included conn.RemoteAddr().
-func TestLogConnectionRefused_NoAddress(t *testing.T) {
+// TestConnectionRefusal_SilentInNormalMode is the RELAY-6 logging rule
+// (issue #43, ADR-0012): no refusal is logged in normal mode. It
+// supersedes the RELAY-4 test that pinned the (then logged) refusal line's
+// field-freeness — a line that is never emitted trivially carries no
+// client address, and a scanner cannot flood the operator's logs.
+func TestConnectionRefusal_SilentInNormalMode(t *testing.T) {
 	var lb lockedBuf
 	prev := log.Writer()
 	log.SetOutput(&lb)
 	defer log.SetOutput(prev)
 
-	// The helper takes no peer address at all (ADR-0012: the relay never
-	// logs, stores or uses IPs). The banned strings mirror what a refusal
-	// line would contain if a RemoteAddr leaked back in.
-	logConnectionRefused("push", 1000)
+	// The accept loop's refusal path: count only, never log.
+	refusalCounters.push.Add(1)
+	refusalCounters.recv.Add(1)
 
-	out := lb.String()
-	if !strings.Contains(out, "push") || !strings.Contains(out, "1000") {
-		t.Errorf("refusal log lost its operator-useful content: %q", out)
+	if out := lb.String(); out != "" {
+		t.Errorf("a connection refusal produced a normal-mode log line: %q", out)
 	}
-	for _, banned := range []string{"203.0.113.7", "5555", "addr="} {
+}
+
+// TestSessionErrorLog_RateLimited (RELAY-6): session errors may be logged
+// (ADR-0012 allows errors) but never one line per connection — at most one
+// line per listener kind per minute, with the suppressed count attached.
+func TestSessionErrorLog_RateLimited(t *testing.T) {
+	var lb lockedBuf
+	prev := log.Writer()
+	log.SetOutput(&lb)
+	defer log.SetOutput(prev)
+
+	now := time.Now()
+	clock := func() time.Time { return now }
+	el := newSessionErrorLog(clock)
+
+	el.logf("push") // first line: emitted
+	el.logf("push") // inside the window: suppressed
+	el.logf("push") // inside the window: suppressed
+	el.logf("recv") // a different kind has its own window: emitted
+
+	lines := strings.Count(lb.String(), "\n")
+	if lines != 2 {
+		t.Fatalf("want 2 log lines (one per kind), got %d: %q", lines, lb.String())
+	}
+
+	// After the window, the next error reports the suppressed count.
+	now = now.Add(2 * sessionErrorLogInterval)
+	el.logf("push")
+	out := lb.String()
+	if !strings.Contains(out, "3 since last report") {
+		t.Errorf("suppressed count missing from the post-window line: %q", out)
+	}
+	for _, banned := range []string{"203.0.113.7", "addr="} {
 		if strings.Contains(out, banned) {
-			t.Errorf("refusal log contains client address %q: %q", banned, out)
+			t.Errorf("session error log contains client metadata %q: %q", banned, out)
 		}
 	}
 }

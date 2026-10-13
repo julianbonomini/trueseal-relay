@@ -2,6 +2,7 @@ package session
 
 import (
 	"net"
+	"time"
 
 	"github.com/flynn/noise"
 )
@@ -26,19 +27,30 @@ type sessionWriter struct {
 }
 
 // newSessionWriter starts the writer goroutine. It exits when stop is
-// closed or when encrypt/write fails (a broken conn ends the session's
-// read loop, which is what closes stop).
-func newSessionWriter(conn net.Conn, cs *noise.CipherState, stop <-chan struct{}) *sessionWriter {
+// closed or when encrypt/write fails.
+//
+// writeTimeout is the per-write deadline (RELAY-6; the RELAY-2 review
+// follow-up): a blocked conn.Write does not select on stop, so without a
+// deadline a client that never reads pins the writer goroutine and its
+// queue forever. On ANY exit the writer closes the conn — that unblocks
+// the session's read loop promptly (deadline or not), which is what
+// closes stop and releases every blocked send().
+func newSessionWriter(conn net.Conn, cs *noise.CipherState, stop <-chan struct{}, writeTimeout time.Duration) *sessionWriter {
 	w := &sessionWriter{
 		queue: make(chan []byte, writerQueueCapacity),
 		done:  make(chan struct{}),
 	}
-	go w.run(conn, cs, stop)
+	go w.run(conn, cs, stop, writeTimeout)
 	return w
 }
 
-func (w *sessionWriter) run(conn net.Conn, cs *noise.CipherState, stop <-chan struct{}) {
+func (w *sessionWriter) run(conn net.Conn, cs *noise.CipherState, stop <-chan struct{}, writeTimeout time.Duration) {
 	defer close(w.done)
+	// A failed or stopped writer must tear the session down: closing the
+	// conn makes the read loop fail, which closes stop and frees every
+	// goroutine blocked in send(). The session's own defer conn.Close()
+	// makes the normal path a harmless double close.
+	defer conn.Close()
 	for {
 		select {
 		case <-stop:
@@ -47,6 +59,9 @@ func (w *sessionWriter) run(conn net.Conn, cs *noise.CipherState, stop <-chan st
 			encrypted, err := cs.Encrypt(nil, nil, frame)
 			if err != nil {
 				return
+			}
+			if writeTimeout > 0 {
+				_ = conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 			}
 			if err := writeNoiseMsg(conn, encrypted); err != nil {
 				return

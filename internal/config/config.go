@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -21,6 +23,36 @@ const DefaultTTL = 30 * 24 * time.Hour
 
 // DefaultReapInterval is the default reaper run interval.
 const DefaultReapInterval = time.Hour
+
+// ADR-0012 defaults for the RELAY-6 abuse limits and liveness deadlines.
+// Every value is operator-configurable (short values for e2e); the
+// envelope size limit and the TTL may only be lowered (RELAY-8 owns the
+// startup refusals for values above the ceilings).
+const (
+	// DefaultHandshakeDeadline bounds the version-prefix read + Noise
+	// handshake on both listeners.
+	DefaultHandshakeDeadline = 10 * time.Second
+	// DefaultPushSessionDeadline bounds a whole Push Session, accept to close.
+	DefaultPushSessionDeadline = 30 * time.Second
+	// DefaultReceiveIdleDeadline closes a Receive Session after this much
+	// silence; ANY inbound frame resets it (the client heartbeats every
+	// 25 s, so 75 s tolerates two lost beats).
+	DefaultReceiveIdleDeadline = 75 * time.Second
+	// DefaultWriteDeadline bounds one outbound write — a stalled client
+	// cannot pin the writer goroutine (the RELAY-2 review follow-up).
+	DefaultWriteDeadline = 30 * time.Second
+	// DefaultMaxBlobsPerInbox caps undelivered blobs per Inbox.
+	DefaultMaxBlobsPerInbox int64 = 10_000
+	// DefaultMaxBytesPerInbox caps undelivered envelope bytes per Inbox (256 MiB).
+	DefaultMaxBytesPerInbox int64 = 256 * 1024 * 1024
+	// DefaultPushRatePerSecond is the sustained per-recipient push rate.
+	DefaultPushRatePerSecond = 20.0
+	// DefaultPushRateBurst is the per-recipient token-bucket capacity.
+	DefaultPushRateBurst = 500
+	// DefaultMaxReceiveSessionsPerDevice caps concurrent Receive Sessions
+	// per Device key (reconnect overlap needs headroom above 1).
+	DefaultMaxReceiveSessionsPerDevice = 4
+)
 
 // Config is the operator-facing configuration for trueseal-relay.
 // Source: TOML file, with optional env var overrides (TRUESEAL_RELAY_ prefix).
@@ -43,8 +75,22 @@ type RelayConfig struct {
 	MaxEnvelopeBytes int64 `toml:"max_envelope_bytes"`
 	// MaxConnections is the maximum number of concurrent connections per listener
 	// (push and receive counted separately). Connections beyond the cap are
-	// rejected immediately with a log warning. 0 means no limit.
+	// refused and closed silently (ADR-0012: no refusal is logged in normal
+	// mode). 0 means no limit.
 	MaxConnections int `toml:"max_connections"`
+
+	// RELAY-6 (ADR-0012): liveness deadlines and abuse limits. Every limit
+	// is keyed on the recipient Inbox, the Device key or a global count —
+	// never on a peer address.
+	HandshakeDeadline           time.Duration `toml:"handshake_deadline"`
+	PushSessionDeadline         time.Duration `toml:"push_session_deadline"`
+	ReceiveIdleDeadline         time.Duration `toml:"receive_idle_deadline"`
+	WriteDeadline               time.Duration `toml:"write_deadline"`
+	MaxBlobsPerInbox            int64         `toml:"max_blobs_per_inbox"`
+	MaxBytesPerInbox            int64         `toml:"max_bytes_per_inbox"`
+	PushRatePerSecond           float64       `toml:"push_rate_per_second"`
+	PushRateBurst               int           `toml:"push_rate_burst"`
+	MaxReceiveSessionsPerDevice int           `toml:"max_receive_sessions_per_device"`
 }
 
 // StoreConfig holds storage adapter settings.
@@ -99,6 +145,33 @@ func setDefaults(cfg *Config) {
 	}
 	if cfg.Relay.MaxEnvelopeBytes <= 0 {
 		cfg.Relay.MaxEnvelopeBytes = DefaultMaxEnvelopeBytes
+	}
+	if cfg.Relay.HandshakeDeadline <= 0 {
+		cfg.Relay.HandshakeDeadline = DefaultHandshakeDeadline
+	}
+	if cfg.Relay.PushSessionDeadline <= 0 {
+		cfg.Relay.PushSessionDeadline = DefaultPushSessionDeadline
+	}
+	if cfg.Relay.ReceiveIdleDeadline <= 0 {
+		cfg.Relay.ReceiveIdleDeadline = DefaultReceiveIdleDeadline
+	}
+	if cfg.Relay.WriteDeadline <= 0 {
+		cfg.Relay.WriteDeadline = DefaultWriteDeadline
+	}
+	if cfg.Relay.MaxBlobsPerInbox <= 0 {
+		cfg.Relay.MaxBlobsPerInbox = DefaultMaxBlobsPerInbox
+	}
+	if cfg.Relay.MaxBytesPerInbox <= 0 {
+		cfg.Relay.MaxBytesPerInbox = DefaultMaxBytesPerInbox
+	}
+	if cfg.Relay.PushRatePerSecond <= 0 {
+		cfg.Relay.PushRatePerSecond = DefaultPushRatePerSecond
+	}
+	if cfg.Relay.PushRateBurst <= 0 {
+		cfg.Relay.PushRateBurst = DefaultPushRateBurst
+	}
+	if cfg.Relay.MaxReceiveSessionsPerDevice <= 0 {
+		cfg.Relay.MaxReceiveSessionsPerDevice = DefaultMaxReceiveSessionsPerDevice
 	}
 	if cfg.Store.Type == "" {
 		cfg.Store.Type = "sqlite"
@@ -157,6 +230,70 @@ func applyEnvOverrides(cfg *Config) {
 			log.Printf("config: ignoring invalid TRUESEAL_RELAY_MAX_ENVELOPE_BYTES %q", v)
 		}
 	}
+	// RELAY-6 (ADR-0012) deadlines and abuse limits — short values for e2e.
+	parseDurationEnv("TRUESEAL_RELAY_HANDSHAKE_DEADLINE", &cfg.Relay.HandshakeDeadline)
+	parseDurationEnv("TRUESEAL_RELAY_PUSH_SESSION_DEADLINE", &cfg.Relay.PushSessionDeadline)
+	parseDurationEnv("TRUESEAL_RELAY_RECEIVE_IDLE_DEADLINE", &cfg.Relay.ReceiveIdleDeadline)
+	parseDurationEnv("TRUESEAL_RELAY_WRITE_DEADLINE", &cfg.Relay.WriteDeadline)
+	parseInt64Env("TRUESEAL_RELAY_MAX_BLOBS_PER_INBOX", &cfg.Relay.MaxBlobsPerInbox)
+	parseInt64Env("TRUESEAL_RELAY_MAX_BYTES_PER_INBOX", &cfg.Relay.MaxBytesPerInbox)
+	parseFloatEnv("TRUESEAL_RELAY_PUSH_RATE_PER_SECOND", &cfg.Relay.PushRatePerSecond)
+	parseIntEnv("TRUESEAL_RELAY_PUSH_RATE_BURST", &cfg.Relay.PushRateBurst)
+	parseIntEnv("TRUESEAL_RELAY_MAX_RECEIVE_SESSIONS_PER_DEVICE", &cfg.Relay.MaxReceiveSessionsPerDevice)
+}
+
+// parseDurationEnv applies a Go duration env override (e.g. "250ms").
+func parseDurationEnv(name string, dst *time.Duration) {
+	v := os.Getenv(name)
+	if v == "" {
+		return
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		log.Printf("config: ignoring invalid %s %q: %v", name, v, err)
+		return
+	}
+	*dst = d
+}
+
+func parseInt64Env(name string, dst *int64) {
+	v := os.Getenv(name)
+	if v == "" {
+		return
+	}
+	var n int64
+	if _, err := fmt.Sscanf(v, "%d", &n); err != nil || n <= 0 {
+		log.Printf("config: ignoring invalid %s %q", name, v)
+		return
+	}
+	*dst = n
+}
+
+func parseIntEnv(name string, dst *int) {
+	v := os.Getenv(name)
+	if v == "" {
+		return
+	}
+	var n int
+	if _, err := fmt.Sscanf(v, "%d", &n); err != nil || n <= 0 {
+		log.Printf("config: ignoring invalid %s %q", name, v)
+		return
+	}
+	*dst = n
+}
+
+func parseFloatEnv(name string, dst *float64) {
+	v := os.Getenv(name)
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil || f <= 0 {
+		log.Printf("config: ignoring invalid %s %q", name, v)
+		return
+	}
+	*dst = f
 }
 
 func validate(cfg *Config) error {

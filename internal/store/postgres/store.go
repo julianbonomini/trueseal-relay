@@ -95,16 +95,53 @@ func (s *Store) Close() {
 
 // Put stores an envelope in the inbox for recipientKey. See store.InboxStore.
 func (s *Store) Put(ctx context.Context, recipientKey []byte, envelope []byte, ttl time.Duration) error {
+	return s.PutWithLimits(ctx, recipientKey, envelope, ttl, store.InboxLimits{})
+}
+
+// PutWithLimits is Put with an occupancy check (RELAY-6; ADR-0012): the
+// COUNT/SUM probe and the INSERT run in one transaction. The check takes a
+// row-lock-free snapshot, so under a concurrent cross-node flood two pushes
+// can race past the probe and overshoot the quota by their own blob — the
+// same visibility caveat PeekAfter carries for this experimental backend.
+// No blob is lost or misfiled; the quota re-tightens on the next push. A
+// refusal wraps store.ErrInboxFull and stores nothing.
+func (s *Store) PutWithLimits(ctx context.Context, recipientKey []byte, envelope []byte, ttl time.Duration, limits store.InboxLimits) error {
 	if len(recipientKey) != 32 {
 		return fmt.Errorf("postgres: recipient key must be 32 bytes, got %d", len(recipientKey))
 	}
 	expiresAt := time.Now().Add(ttl).Unix()
-	_, err := s.pool.Exec(ctx,
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("postgres: put begin: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op after Commit
+
+	if limits.MaxBlobs > 0 || limits.MaxBytes > 0 {
+		var blobs, bytes int64
+		err := tx.QueryRow(ctx,
+			`SELECT COUNT(*), COALESCE(SUM(LENGTH(envelope)), 0) FROM inbox WHERE recipient = $1`,
+			recipientKey,
+		).Scan(&blobs, &bytes)
+		if err != nil {
+			return fmt.Errorf("postgres: put probe: %w", err)
+		}
+		if limits.MaxBlobs > 0 && blobs >= limits.MaxBlobs {
+			return fmt.Errorf("%w: %d blobs (limit %d)", store.ErrInboxFull, blobs, limits.MaxBlobs)
+		}
+		if limits.MaxBytes > 0 && bytes+int64(len(envelope)) > limits.MaxBytes {
+			return fmt.Errorf("%w: %d+%d bytes (limit %d)", store.ErrInboxFull, bytes, len(envelope), limits.MaxBytes)
+		}
+	}
+
+	_, err = tx.Exec(ctx,
 		`INSERT INTO inbox (recipient, envelope, expires_at) VALUES ($1, $2, $3)`,
 		recipientKey, envelope, expiresAt,
 	)
 	if err != nil {
 		return fmt.Errorf("postgres: put: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("postgres: put commit: %w", err)
 	}
 	return nil
 }

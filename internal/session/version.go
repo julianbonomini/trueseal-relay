@@ -59,8 +59,10 @@ func (e *VersionRefusalError) Error() string {
 // "unsupported <min>..<max>\n" and returns a *VersionRefusalError. A plain
 // I/O error (EOF, reset) is returned as-is — nothing is written.
 //
-// The read has no deadline of its own: handshake and session deadlines are
-// RELAY-6's scope (ADR-0012), applied by the listener around the accept path.
+// The read has no deadline of its own: the caller's handshake deadline
+// (RELAY-6; ADR-0012's 10 s) covers it — see AcceptPushWithDeadlines and
+// AcceptReceiveWithDeadlines, which arm an absolute deadline before this
+// runs so a client that connects and sends nothing cannot hold a slot.
 func exchangeTransportVersion(conn net.Conn) ([]byte, error) {
 	prefix := make([]byte, transportPrefixLen)
 	if _, err := io.ReadFull(conn, prefix); err != nil {
