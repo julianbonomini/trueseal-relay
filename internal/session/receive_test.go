@@ -2,6 +2,7 @@ package session_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"testing"
@@ -29,13 +30,13 @@ func newReceiveHandler() *receiveHandler {
 
 func (h *receiveHandler) OnPush(_ context.Context, _ []byte) error { return nil }
 
-func (h *receiveHandler) OnReceiveConnect(_ context.Context, key relay.RecipientKey) <-chan relay.DeliveryBlob {
+func (h *receiveHandler) OnReceiveConnect(_ context.Context, key relay.RecipientKey) (<-chan relay.DeliveryBlob, error) {
 	// Signal the key before returning so tests can synchronise via connectedCh.
 	select {
 	case h.connectedCh <- key:
 	default:
 	}
-	return h.deliverCh
+	return h.deliverCh, nil
 }
 
 func (h *receiveHandler) OnDeliverAck(_ context.Context, _ relay.RecipientKey, _ int64) error {
@@ -151,15 +152,56 @@ func TestAcceptReceive_EchoesHeartbeat(t *testing.T) {
 	client.Close()
 }
 
-// AcceptReceive: if OnReceiveConnect returns a pre-closed channel (Subscribe failure),
-// AcceptReceive must close the connection rather than silently continue unable to deliver.
+// RELAY-7 regression: a DeliveryBlob already buffered on the deliver channel
+// when the session opens must be DELIVERED to the device — not consumed and
+// discarded by the subscribe-failure probe (issue #44; the discard breaks
+// at-least-once delivery for that session, ADR-0009).
+func TestAcceptReceive_EarlyBufferedBlobDelivered(t *testing.T) {
+	relayKey, _ := noise.DH25519.GenerateKeypair(nil)
+	deviceKey, _ := noise.DH25519.GenerateKeypair(nil)
+
+	client, server := net.Pipe()
+	h := newReceiveHandler()
+
+	// A blob is queued for delivery before the session finishes opening
+	// (e.g. the router's initial inbox flush raced session setup).
+	h.deliverCh <- relay.DeliveryBlob{BlobID: 7, Envelope: []byte("early-blob")}
+
+	go session.AcceptReceive(server, relayKey, h) //nolint:errcheck
+
+	_, cs2 := doXXHandshake(t, client, relayKey.Public, deviceKey)
+
+	client.SetDeadline(time.Now().Add(2 * time.Second))
+	raw := readMsg(t, client)
+	plain, err := cs2.Decrypt(nil, nil, raw)
+	if err != nil {
+		t.Fatalf("decrypt deliver: %v", err)
+	}
+	typ, body, ok := session.Parse(plain)
+	if !ok || typ != session.MsgTypeDeliver {
+		t.Fatalf("want Deliver, got type=%02x ok=%v — the early blob was discarded", typ, ok)
+	}
+	id, envelope, ok := session.DecodeDeliverBody(body)
+	if !ok {
+		t.Fatal("DecodeDeliverBody returned ok=false")
+	}
+	if id != 7 || string(envelope) != "early-blob" {
+		t.Errorf("want blob 7 'early-blob', got id=%d %q", id, envelope)
+	}
+
+	client.Close()
+}
+
+// AcceptReceive: if OnReceiveConnect reports a registration error (Subscribe
+// failure), AcceptReceive must close the connection rather than silently
+// continue unable to deliver (RELAY-7: explicit error, no channel probing).
 func TestAcceptReceive_SubscribeFailureClosesConnection(t *testing.T) {
 	relayKey, _ := noise.DH25519.GenerateKeypair(nil)
 	deviceKey, _ := noise.DH25519.GenerateKeypair(nil)
 
 	client, server := net.Pipe()
 
-	// failHandler returns a pre-closed channel, simulating Subscribe failure.
+	// failHandler returns an error, simulating Subscribe failure.
 	failHandler := &subscribeFailHandler{}
 
 	acceptDone := make(chan error, 1)
@@ -195,10 +237,8 @@ func TestAcceptReceive_SubscribeFailureClosesConnection(t *testing.T) {
 type subscribeFailHandler struct{}
 
 func (h *subscribeFailHandler) OnPush(_ context.Context, _ []byte) error { return nil }
-func (h *subscribeFailHandler) OnReceiveConnect(_ context.Context, _ relay.RecipientKey) <-chan relay.DeliveryBlob {
-	ch := make(chan relay.DeliveryBlob)
-	close(ch)
-	return ch
+func (h *subscribeFailHandler) OnReceiveConnect(_ context.Context, _ relay.RecipientKey) (<-chan relay.DeliveryBlob, error) {
+	return nil, errors.New("subscribe failed")
 }
 func (h *subscribeFailHandler) OnDeliverAck(_ context.Context, _ relay.RecipientKey, _ int64) error {
 	return nil

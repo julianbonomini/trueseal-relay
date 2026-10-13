@@ -19,7 +19,11 @@ type Handler interface {
 	// deviceKey is the device's stable noise public key.
 	// Returns a channel on which the routing loop sends DeliveryBlobs to deliver
 	// to this device. The channel is closed when ctx is done.
-	OnReceiveConnect(ctx context.Context, deviceKey relay.RecipientKey) <-chan relay.DeliveryBlob
+	// A non-nil error means the device could not be registered (e.g. the
+	// subscription failed) — the session layer closes the connection so the
+	// client reconnects (RELAY-7: registration failure is reported explicitly,
+	// never detected by consuming from the delivery channel).
+	OnReceiveConnect(ctx context.Context, deviceKey relay.RecipientKey) (<-chan relay.DeliveryBlob, error)
 
 	// OnDeliverAck is called when the Device sends a DeliverAck frame.
 	// blobID is the opaque identifier echoed from the corresponding Deliver frame.

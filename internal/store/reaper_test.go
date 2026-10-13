@@ -96,6 +96,9 @@ func (e *errorStore) Put(_ context.Context, _ []byte, _ []byte, _ time.Duration)
 func (e *errorStore) Peek(_ context.Context, _ []byte) ([]store.InboxBlob, error) {
 	return nil, nil
 }
+func (e *errorStore) PeekAfter(_ context.Context, _ []byte, _ int64) ([]store.InboxBlob, error) {
+	return nil, nil
+}
 func (e *errorStore) DeleteForRecipient(_ context.Context, _ []byte, _ []int64) error {
 	return nil
 }

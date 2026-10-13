@@ -104,6 +104,49 @@ func TestPeek_FIFOOrder(t *testing.T) {
 	}
 }
 
+// PeekAfter returns only blobs with IDs strictly greater than afterID, in
+// arrival order — the basis for once-per-Receive-Session delivery (RELAY-7).
+func TestPeekAfter_ReturnsOnlyNewerInOrder(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	for _, env := range []string{"one", "two", "three"} {
+		s.Put(ctx, keyA, []byte(env), time.Hour) //nolint:errcheck
+	}
+
+	all, err := s.Peek(ctx, keyA)
+	if err != nil {
+		t.Fatalf("Peek: %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("want 3 blobs, got %d", len(all))
+	}
+
+	newer, err := s.PeekAfter(ctx, keyA, all[0].ID)
+	if err != nil {
+		t.Fatalf("PeekAfter: %v", err)
+	}
+	if len(newer) != 2 || string(newer[0].Envelope) != "two" || string(newer[1].Envelope) != "three" {
+		t.Errorf("want [two three] after first ID, got %v", newer)
+	}
+
+	none, err := s.PeekAfter(ctx, keyA, all[2].ID)
+	if err != nil {
+		t.Fatalf("PeekAfter last ID: %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("want no blobs after last ID, got %v", none)
+	}
+
+	fromZero, err := s.PeekAfter(ctx, keyA, 0)
+	if err != nil {
+		t.Fatalf("PeekAfter 0: %v", err)
+	}
+	if len(fromZero) != 3 {
+		t.Errorf("want 3 blobs from afterID 0, got %d", len(fromZero))
+	}
+}
+
 // Peek on empty inbox returns empty slice without error.
 func TestPeek_EmptyInbox(t *testing.T) {
 	s := newTestStore(t)

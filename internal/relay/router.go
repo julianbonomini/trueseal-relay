@@ -15,15 +15,19 @@ import (
 // Receive Sessions via the Notifier.
 //
 // Push path:  body[0:32] = recipient routing key; body[32:] = opaque envelope.
-//             Envelope size is checked against maxEnvelopeBytes (ADR-0008).
-//             Put to store → Notify → Ack.
-//             Ack is sent only after Put succeeds (ADR-0008).
 //
-// Deliver path: on Receive Session open, Peek existing blobs (without deleting),
-//               then range Notifier signals → Peek → deliver. Blobs are deleted only
-//               after the Device sends a DeliverAck frame. If the session closes before
-//               the Ack arrives, the blob remains in the store and is re-delivered on
-//               the next Receive Session. See ADR-0009.
+//	Envelope size is checked against maxEnvelopeBytes (ADR-0008).
+//	Put to store → Notify → Ack.
+//	Ack is sent only after Put succeeds (ADR-0008).
+//
+// Deliver path: on Receive Session open, deliver the existing Inbox (without
+//
+//	deleting), then on each Notifier signal deliver only Blobs not yet
+//	delivered to THIS session (PeekAfter on the last delivered ID —
+//	RELAY-7). Blobs are deleted only after the Device sends a DeliverAck
+//	frame. If the session closes before the Ack arrives, the blob remains
+//	in the store and is re-delivered on the next Receive Session.
+//	See ADR-0009.
 type Router struct {
 	store            store.InboxStore
 	notifier         notify.Notifier
@@ -77,11 +81,14 @@ func (r *Router) OnDeliverAck(ctx context.Context, deviceKey RecipientKey, blobI
 // The relay allows multiple concurrent Receive Sessions for the same key.
 // trueseal-sync opens exactly one Receive Session per TruesealSession and replaces
 // it atomically on reconnect, so genuine concurrency is rare (brief overlap
-// during reconnect only). The relay uses Peek (non-destructive); blobs are
+// during reconnect only). Delivery is non-destructive (PeekAfter); blobs are
 // deleted only after DeliverAck. With concurrent sessions both may deliver the
 // same blob — deduplication is the client's responsibility. This behaviour is
-// tested in TestRouter_TwoConcurrentReceiveSessions_NoDoubleDelivery.
-func (r *Router) OnReceiveConnect(ctx context.Context, deviceKey RecipientKey) <-chan DeliveryBlob {
+// tested in TestRouter_TwoConcurrentReceiveSessions_PeekBothSeeBlob.
+//
+// A non-nil error means the device could not be registered — the session
+// layer closes the connection so the client reconnects (RELAY-7).
+func (r *Router) OnReceiveConnect(ctx context.Context, deviceKey RecipientKey) (<-chan DeliveryBlob, error) {
 	// deliverCh buffers up to 256 blobs between the delivery goroutine and
 	// the session write loop. 256 is a practical upper bound for a single peek
 	// burst — large enough to absorb a full inbox drain without blocking the
@@ -93,14 +100,18 @@ func (r *Router) OnReceiveConnect(ctx context.Context, deviceKey RecipientKey) <
 	subCh, err := r.notifier.Subscribe(ctx, deviceKey[:])
 	if err != nil {
 		close(deliverCh)
-		return deliverCh
+		return nil, fmt.Errorf("relay: subscribe device inbox: %w", err)
 	}
 
 	go func() {
 		defer close(deliverCh)
 
-		// Peek any blobs that arrived before this session opened.
-		r.peekTo(ctx, deviceKey, deliverCh)
+		// lastID tracks the last Blob delivered to THIS session. The initial
+		// flush covers the whole Inbox (afterID 0); each notify then delivers
+		// only newer Blobs, so a Blob is sent once per Receive Session and
+		// un-acked Blobs are re-sent only on a NEW session (RELAY-7; ADR-0009;
+		// sync ADR-0026).
+		lastID := r.deliverNew(ctx, deviceKey, 0, deliverCh)
 
 		for {
 			select {
@@ -110,26 +121,30 @@ func (r *Router) OnReceiveConnect(ctx context.Context, deviceKey RecipientKey) <
 				if !ok {
 					return
 				}
-				r.peekTo(ctx, deviceKey, deliverCh)
+				lastID = r.deliverNew(ctx, deviceKey, lastID, deliverCh)
 			}
 		}
 	}()
 
-	return deliverCh
+	return deliverCh, nil
 }
 
-// peekTo reads the inbox for deviceKey without deleting and sends each blob to ch.
-// Blobs remain in the store until the device sends a DeliverAck. See ADR-0009.
-func (r *Router) peekTo(ctx context.Context, key RecipientKey, ch chan<- DeliveryBlob) {
-	blobs, err := r.store.Peek(ctx, key[:])
+// deliverNew sends every Inbox blob for key with an ID greater than afterID to
+// ch, in arrival order, and returns the ID of the last Blob sent (afterID if
+// none). Blobs remain in the store until the device sends a DeliverAck.
+// See ADR-0009.
+func (r *Router) deliverNew(ctx context.Context, key RecipientKey, afterID int64, ch chan<- DeliveryBlob) int64 {
+	blobs, err := r.store.PeekAfter(ctx, key[:], afterID)
 	if err != nil {
-		return
+		return afterID
 	}
 	for _, b := range blobs {
 		select {
 		case ch <- DeliveryBlob{BlobID: b.ID, Envelope: b.Envelope}:
+			afterID = b.ID
 		case <-ctx.Done():
-			return
+			return afterID
 		}
 	}
+	return afterID
 }

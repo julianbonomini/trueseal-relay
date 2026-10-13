@@ -61,7 +61,10 @@ func TestRouter_PushStores(t *testing.T) {
 
 	devCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	ch := r.OnReceiveConnect(devCtx, recipientA)
+	ch, err := r.OnReceiveConnect(devCtx, recipientA)
+	if err != nil {
+		t.Fatalf("OnReceiveConnect: %v", err)
+	}
 
 	select {
 	case got := <-ch:
@@ -84,7 +87,10 @@ func TestRouter_ConnectPeeksExisting(t *testing.T) {
 
 	devCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	ch := r.OnReceiveConnect(devCtx, recipientA)
+	ch, err := r.OnReceiveConnect(devCtx, recipientA)
+	if err != nil {
+		t.Fatalf("OnReceiveConnect: %v", err)
+	}
 
 	got := collectN(t, ch, 3, time.Second)
 	if len(got) != 3 {
@@ -99,7 +105,10 @@ func TestRouter_OnlineDelivery(t *testing.T) {
 
 	devCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	ch := r.OnReceiveConnect(devCtx, recipientA)
+	ch, err := r.OnReceiveConnect(devCtx, recipientA)
+	if err != nil {
+		t.Fatalf("OnReceiveConnect: %v", err)
+	}
 
 	r.OnPush(ctx, pushBody(make32(0xAA), []byte("live-blob"))) //nolint:errcheck
 
@@ -122,7 +131,10 @@ func TestRouter_OfflineThenConnect(t *testing.T) {
 
 	devCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	ch := r.OnReceiveConnect(devCtx, recipientB)
+	ch, err := r.OnReceiveConnect(devCtx, recipientB)
+	if err != nil {
+		t.Fatalf("OnReceiveConnect: %v", err)
+	}
 
 	select {
 	case got := <-ch:
@@ -139,7 +151,10 @@ func TestRouter_DisconnectClosesChannel(t *testing.T) {
 	r := newRouter(t)
 
 	devCtx, cancel := context.WithCancel(context.Background())
-	ch := r.OnReceiveConnect(devCtx, recipientA)
+	ch, err := r.OnReceiveConnect(devCtx, recipientA)
+	if err != nil {
+		t.Fatalf("OnReceiveConnect: %v", err)
+	}
 
 	cancel()
 
@@ -172,8 +187,14 @@ func TestRouter_TwoConcurrentReceiveSessions_PeekBothSeeBlob(t *testing.T) {
 	defer cancel1()
 	defer cancel2()
 
-	ch1 := r.OnReceiveConnect(ctx1, recipientA)
-	ch2 := r.OnReceiveConnect(ctx2, recipientA)
+	ch1, err := r.OnReceiveConnect(ctx1, recipientA)
+	if err != nil {
+		t.Fatalf("OnReceiveConnect: %v", err)
+	}
+	ch2, err := r.OnReceiveConnect(ctx2, recipientA)
+	if err != nil {
+		t.Fatalf("OnReceiveConnect: %v", err)
+	}
 
 	var mu sync.Mutex
 	var got []relay.DeliveryBlob
@@ -209,6 +230,84 @@ func TestRouter_TwoConcurrentReceiveSessions_PeekBothSeeBlob(t *testing.T) {
 	}
 }
 
+// RELAY-7: each Blob is delivered once per Receive Session. Two pushes after
+// connect with no acks: the second notify must deliver ONLY the new Blob —
+// un-acked Blobs re-deliver on a NEW Receive Session, not on every notify
+// (ADR-0009; sync ADR-0026).
+func TestRouter_NotifyDeliversEachBlobOncePerSession(t *testing.T) {
+	r := newRouter(t)
+	ctx := context.Background()
+
+	devCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	ch, err := r.OnReceiveConnect(devCtx, recipientA)
+	if err != nil {
+		t.Fatalf("OnReceiveConnect: %v", err)
+	}
+
+	readBlob := func() string {
+		t.Helper()
+		select {
+		case got := <-ch:
+			return string(got.Envelope)
+		case <-time.After(2 * time.Second):
+			t.Fatal("want a delivered blob, timed out")
+			return ""
+		}
+	}
+
+	if err := r.OnPush(ctx, pushBody(make32(0xAA), []byte("one"))); err != nil {
+		t.Fatalf("OnPush one: %v", err)
+	}
+	if got := readBlob(); got != "one" {
+		t.Fatalf("want first delivery %q, got %q", "one", got)
+	}
+
+	if err := r.OnPush(ctx, pushBody(make32(0xAA), []byte("two"))); err != nil {
+		t.Fatalf("OnPush two: %v", err)
+	}
+	if got := readBlob(); got != "two" {
+		t.Fatalf("want second delivery %q, got %q — blob one must not be re-sent on this session", "two", got)
+	}
+
+	// Nothing more arrives on this session. The 300 ms negative window is
+	// generous for slow CI: a duplicate from a whole-inbox re-flush is the
+	// goroutine's immediate next action, so red stays deterministic.
+	select {
+	case extra := <-ch:
+		t.Fatalf("want no further delivery on this session, got %q", extra.Envelope)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// RELAY-7: arrival order is preserved across notifies (in-order delivery,
+// sync ADR-0026).
+func TestRouter_DeliveryOrderAcrossNotifies(t *testing.T) {
+	r := newRouter(t)
+	ctx := context.Background()
+
+	devCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	ch, err := r.OnReceiveConnect(devCtx, recipientA)
+	if err != nil {
+		t.Fatalf("OnReceiveConnect: %v", err)
+	}
+
+	for _, payload := range []string{"first", "second", "third"} {
+		if err := r.OnPush(ctx, pushBody(make32(0xAA), []byte(payload))); err != nil {
+			t.Fatalf("OnPush %s: %v", payload, err)
+		}
+		select {
+		case got := <-ch:
+			if string(got.Envelope) != payload {
+				t.Fatalf("want %q, got %q — arrival order broken", payload, got.Envelope)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("want %q delivered, timed out", payload)
+		}
+	}
+}
+
 // RELAY-1 regression: a DeliverAck from Device B for a Blob ID that lives in
 // Device A's Inbox must be a silent no-op — the Blob stays in A's Inbox and is
 // still delivered to A (issue #38; sync ADR-0026).
@@ -218,7 +317,10 @@ func TestRouter_DeliverAckFromForeignDevice_DoesNotDelete(t *testing.T) {
 
 	// Device A is online and receives its blob, learning the store-assigned ID.
 	ctxA, cancelA := context.WithCancel(ctx)
-	chA := r.OnReceiveConnect(ctxA, recipientA)
+	chA, err := r.OnReceiveConnect(ctxA, recipientA)
+	if err != nil {
+		t.Fatalf("OnReceiveConnect: %v", err)
+	}
 
 	if err := r.OnPush(ctx, pushBody(make32(0xAA), []byte("for-A"))); err != nil {
 		t.Fatalf("OnPush: %v", err)
@@ -242,7 +344,10 @@ func TestRouter_DeliverAckFromForeignDevice_DoesNotDelete(t *testing.T) {
 	cancelA()
 	ctxA2, cancelA2 := context.WithCancel(ctx)
 	defer cancelA2()
-	chA2 := r.OnReceiveConnect(ctxA2, recipientA)
+	chA2, err := r.OnReceiveConnect(ctxA2, recipientA)
+	if err != nil {
+		t.Fatalf("OnReceiveConnect: %v", err)
+	}
 
 	select {
 	case blob := <-chA2:
@@ -276,7 +381,10 @@ func TestRouter_ReconnectAfterAck_NoRedelivery(t *testing.T) {
 	ctx := context.Background()
 
 	ctx1, cancel1 := context.WithCancel(ctx)
-	ch1 := r.OnReceiveConnect(ctx1, recipientA)
+	ch1, err := r.OnReceiveConnect(ctx1, recipientA)
+	if err != nil {
+		t.Fatalf("OnReceiveConnect: %v", err)
+	}
 
 	if err := r.OnPush(ctx, pushBody(make32(0xAA), []byte("blob"))); err != nil {
 		t.Fatalf("OnPush: %v", err)
@@ -301,7 +409,10 @@ func TestRouter_ReconnectAfterAck_NoRedelivery(t *testing.T) {
 
 	ctx2, cancel2 := context.WithCancel(ctx)
 	defer cancel2()
-	ch2 := r.OnReceiveConnect(ctx2, recipientA)
+	ch2, err := r.OnReceiveConnect(ctx2, recipientA)
+	if err != nil {
+		t.Fatalf("OnReceiveConnect: %v", err)
+	}
 
 	select {
 	case blob := <-ch2:
@@ -323,7 +434,10 @@ func TestRouter_ReconnectWithoutAck_Redelivers(t *testing.T) {
 
 	// First session — receive but do NOT ack
 	ctx1, cancel1 := context.WithCancel(ctx)
-	ch1 := r.OnReceiveConnect(ctx1, recipientA)
+	ch1, err := r.OnReceiveConnect(ctx1, recipientA)
+	if err != nil {
+		t.Fatalf("OnReceiveConnect: %v", err)
+	}
 	select {
 	case <-ch1:
 		// received but not acked
@@ -335,7 +449,10 @@ func TestRouter_ReconnectWithoutAck_Redelivers(t *testing.T) {
 	// Reconnect — blob must be re-delivered
 	ctx2, cancel2 := context.WithCancel(ctx)
 	defer cancel2()
-	ch2 := r.OnReceiveConnect(ctx2, recipientA)
+	ch2, err := r.OnReceiveConnect(ctx2, recipientA)
+	if err != nil {
+		t.Fatalf("OnReceiveConnect: %v", err)
+	}
 	select {
 	case got := <-ch2:
 		if string(got.Envelope) != "blob" {
@@ -407,7 +524,10 @@ func TestRouter_OversizedEnvelopeNotStored(t *testing.T) {
 
 	devCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	ch := r.OnReceiveConnect(devCtx, relay.RecipientKey(make32(0xCC)))
+	ch, err := r.OnReceiveConnect(devCtx, relay.RecipientKey(make32(0xCC)))
+	if err != nil {
+		t.Fatalf("OnReceiveConnect: %v", err)
+	}
 
 	select {
 	case blob := <-ch:

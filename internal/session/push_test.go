@@ -24,10 +24,10 @@ func (m *mockHandler) OnPush(_ context.Context, envelope []byte) error {
 	return m.err
 }
 
-func (m *mockHandler) OnReceiveConnect(_ context.Context, _ relay.RecipientKey) <-chan relay.DeliveryBlob {
+func (m *mockHandler) OnReceiveConnect(_ context.Context, _ relay.RecipientKey) (<-chan relay.DeliveryBlob, error) {
 	ch := make(chan relay.DeliveryBlob)
 	close(ch)
-	return ch
+	return ch, nil
 }
 
 func (m *mockHandler) OnDeliverAck(_ context.Context, _ relay.RecipientKey, _ int64) error {
@@ -234,10 +234,10 @@ func (h *recordOnPushCtxHandler) OnPush(ctx context.Context, _ []byte) error {
 	return nil
 }
 
-func (h *recordOnPushCtxHandler) OnReceiveConnect(_ context.Context, _ relay.RecipientKey) <-chan relay.DeliveryBlob {
+func (h *recordOnPushCtxHandler) OnReceiveConnect(_ context.Context, _ relay.RecipientKey) (<-chan relay.DeliveryBlob, error) {
 	ch := make(chan relay.DeliveryBlob)
 	close(ch)
-	return ch
+	return ch, nil
 }
 
 func (h *recordOnPushCtxHandler) OnDeliverAck(_ context.Context, _ relay.RecipientKey, _ int64) error {
