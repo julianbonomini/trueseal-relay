@@ -2,6 +2,7 @@ package session_test
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"testing"
 	"time"
@@ -353,4 +354,100 @@ func writeMsg(t *testing.T, conn net.Conn, msg []byte) {
 	if _, err := conn.Write(out); err != nil {
 		t.Fatalf("writeMsg: %v", err)
 	}
+}
+
+// ── RELAY-2: concurrent writers on one Receive Session ───────────────────────
+
+// Regression test for RELAY-2 (issue #39): the delivery goroutine and the
+// Heartbeat echo path must not corrupt the Receive Session stream when they
+// write concurrently. flynn/noise CipherState is not safe for concurrent use
+// (racing nonce counters produce frames the client cannot decrypt), and a
+// two-Write length+body framing lets frames interleave on the wire.
+//
+// The test runs heavy Deliver traffic and Heartbeats together on one session
+// and asserts the client decrypts and parses EVERY frame it receives. Deliver
+// frames must all arrive (delivery guarantee); Heartbeat echoes may be dropped
+// under load (a dropped echo is harmless — the client heartbeats every 25 s,
+// ADR-0012), so only a minimum echo count is asserted. Under `-race`, the
+// pre-fix code is also caught by the race detector on the shared CipherState.
+func TestAcceptReceive_ConcurrentDeliverAndHeartbeat_StreamIntegrity(t *testing.T) {
+	const delivers = 200
+	const heartbeats = 200
+
+	relayKey, _ := noise.DH25519.GenerateKeypair(nil)
+	deviceKey, _ := noise.DH25519.GenerateKeypair(nil)
+
+	client, server := net.Pipe()
+	h := newReceiveHandler()
+
+	go session.AcceptReceive(server, relayKey, h) //nolint:errcheck
+
+	cs1, cs2 := doXXHandshake(t, client, relayKey.Public, deviceKey)
+
+	select {
+	case <-h.connectedCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("OnReceiveConnect not called within deadline")
+	}
+
+	// Deliver traffic from the routing loop.
+	go func() {
+		for i := 0; i < delivers; i++ {
+			h.deliverCh <- relay.DeliveryBlob{
+				BlobID:   int64(1000 + i),
+				Envelope: []byte(fmt.Sprintf("blob-%d", i)),
+			}
+		}
+	}()
+
+	// Concurrent Heartbeats from the client.
+	hbDone := make(chan struct{})
+	go func() {
+		defer close(hbDone)
+		for i := 0; i < heartbeats; i++ {
+			hb, err := cs1.Encrypt(nil, nil, session.Frame(session.MsgTypeHeartbeat, nil))
+			if err != nil {
+				return
+			}
+			out := make([]byte, 2+len(hb))
+			out[0] = byte(len(hb) >> 8)
+			out[1] = byte(len(hb))
+			copy(out[2:], hb)
+			if _, err := client.Write(out); err != nil {
+				return // session torn down
+			}
+		}
+	}()
+
+	// Read until every Deliver has arrived (plus at least one echo, proving
+	// the heartbeat path was exercised). Every received frame must decrypt
+	// and parse — a single failure means the stream was corrupted.
+	gotDelivers, gotEchoes := 0, 0
+	client.SetDeadline(time.Now().Add(30 * time.Second))
+	for gotDelivers < delivers || gotEchoes == 0 {
+		raw := readMsg(t, client)
+		plain, err := cs2.Decrypt(nil, nil, raw)
+		if err != nil {
+			t.Fatalf("frame %d: decrypt failed (stream corrupted): %v", gotDelivers+gotEchoes, err)
+		}
+		typ, body, ok := session.Parse(plain)
+		if !ok {
+			t.Fatalf("frame %d: malformed frame (boundaries interleaved)", gotDelivers+gotEchoes)
+		}
+		switch typ {
+		case session.MsgTypeDeliver:
+			_, envelope, ok := session.DecodeDeliverBody(body)
+			if !ok {
+				t.Fatalf("frame %d: undecodable Deliver body", gotDelivers)
+			}
+			gotDelivers++
+			_ = envelope
+		case session.MsgTypeHeartbeat:
+			gotEchoes++
+		default:
+			t.Fatalf("frame %d: unexpected type %02x", gotDelivers+gotEchoes, typ)
+		}
+	}
+	<-hbDone
+	client.Close()
 }

@@ -17,6 +17,11 @@ import (
 //   - ranges the returned deliver channel, sending Deliver frames to the device
 //   - echoes Heartbeat frames
 //
+// All outbound frames go through one sessionWriter, the sole owner of the
+// outbound CipherState and the conn's write side (RELAY-2: concurrent
+// encryption corrupts the Noise nonce sequence; interleaved writes corrupt
+// framing).
+//
 // Returns when the connection closes or an unrecoverable error occurs.
 // Callers must use defer cancel() on the context passed to OnReceiveConnect.
 func AcceptReceive(conn net.Conn, relayKey noise.DHKey, handler Handler) error {
@@ -72,6 +77,11 @@ func AcceptReceive(conn net.Conn, relayKey noise.DHKey, handler Handler) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// stop shuts down the writer and the deliver goroutine when AcceptReceive
+	// returns. Deferred before any return path below.
+	stop := make(chan struct{})
+	defer close(stop)
+
 	deliverCh := handler.OnReceiveConnect(ctx, deviceKey)
 
 	// Detect Subscribe failure: if the deliver channel is already closed,
@@ -89,18 +99,17 @@ func AcceptReceive(conn net.Conn, relayKey noise.DHKey, handler Handler) error {
 		// Channel is open and empty — normal path.
 	}
 
-	// Deliver goroutine: send blobs from routing loop to device
+	// One writer per Receive Session: the sole owner of cs2 and the conn's
+	// write side. Deliver and Heartbeat-echo frames both go through it.
+	writer := newSessionWriter(conn, cs2, stop)
+
+	// Deliver goroutine: send blobs from routing loop to device.
+	// send blocks while the writer is behind — that backpressure is intended;
+	// unwritten blobs are never DeliverAck'd, so the Inbox keeps them.
 	go func() {
 		for blob := range deliverCh {
 			body := EncodeDeliverBody(uint64(blob.BlobID), blob.Envelope)
-			frame := Frame(MsgTypeDeliver, body)
-			encrypted, err := cs2.Encrypt(nil, nil, frame)
-			if err != nil {
-				log.Printf("recv: encrypt deliver failed  key=%x  blob_id=%d: %v", deviceKey[:4], blob.BlobID, err)
-				return
-			}
-			if err := writeNoiseMsg(conn, encrypted); err != nil {
-				log.Printf("recv: write deliver failed  key=%x  blob_id=%d: %v", deviceKey[:4], blob.BlobID, err)
+			if !writer.send(Frame(MsgTypeDeliver, body), stop) {
 				return
 			}
 		}
@@ -128,13 +137,10 @@ func AcceptReceive(conn net.Conn, relayKey noise.DHKey, handler Handler) error {
 
 		switch typ {
 		case MsgTypeHeartbeat:
-			hb, err := cs2.Encrypt(nil, nil, Frame(MsgTypeHeartbeat, nil))
-			if err != nil {
-				return formatErr("receive: encrypt heartbeat", err)
-			}
-			if err := writeNoiseMsg(conn, hb); err != nil {
-				return formatErr("receive: send heartbeat", err)
-			}
+			// Non-blocking: a dropped echo is harmless (the client heartbeats
+			// every 25 s, ADR-0012) and the read loop must never stall behind
+			// a slow conn — it also serves DeliverAck.
+			writer.trySend(Frame(MsgTypeHeartbeat, nil))
 		case MsgTypeDeliverAck:
 			blobID, ok := DecodeDeliverAckBody(body)
 			if !ok {
