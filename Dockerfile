@@ -15,6 +15,12 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
   go build -ldflags="-s -w" -trimpath \
   -o /trueseal-relay ./cmd/trueseal-relay
 
+# RELAY-14: a release image must never carry the Hostile Relay surface.
+# The `hostile` build tag is never passed here; fail the image build if
+# hook code somehow survived anyway (RELAY-15 carries the same assertion
+# into the candidate/promote workflows).
+RUN ! go tool nm /trueseal-relay | grep -q "internal/hostile"
+
 # ── final stage ───────────────────────────────────────────────────────────────
 # alpine: smallest image that provides /bin/sh for the entrypoint script
 FROM alpine:3.21

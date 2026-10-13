@@ -18,3 +18,27 @@ jobs:
 
       - name: Test
         run: go test -race ./...
+
+      - name: Build (hostile tag)
+        run: go build -tags hostile ./...
+
+      - name: Test (hostile tag)
+        run: go test -race -tags hostile ./...
+
+      # RELAY-14: a release build must contain no Hostile Relay hook code
+      # and no control listener, and must offer no runtime enrollment
+      # path. Proven two ways: no internal/hostile symbol survives
+      # linking, and the -hostile-control flag is undefined.
+      - name: Release build excludes the Hostile Relay surface
+        run: |
+          go build -o /tmp/trueseal-relay-release ./cmd/trueseal-relay
+          if go tool nm /tmp/trueseal-relay-release | grep "internal/hostile"; then
+            echo "::error::release build contains hostile hook symbols"
+            exit 1
+          fi
+          if /tmp/trueseal-relay-release -hostile-control 127.0.0.1:1 2>&1 | grep -q "flag provided but not defined"; then
+            echo "OK: -hostile-control is undefined in release builds"
+          else
+            echo "::error::-hostile-control must not exist in release builds"
+            exit 1
+          fi

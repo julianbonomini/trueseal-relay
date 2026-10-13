@@ -237,6 +237,33 @@ Every numeric knob is explicit: an unset knob takes its default, but an explicit
 
 Full annotated example: [`config/relay.toml`](config/relay.toml).
 
+### Hostile Relay (e2e test builds only)
+
+The release gate (e2e ADR-0001, gate G3) needs a **Hostile Relay**: the real relay, plus injection hooks that make its delivery path misbehave on demand, so the harness can prove every SDK rejects hostile relay input with a typed error or delivery issue — and never acks or applies it.
+
+Build it with the `hostile` Go build tag:
+
+```sh
+go build -tags hostile -o trueseal-relay-hostile ./cmd/trueseal-relay
+./trueseal-relay-hostile -no-config -hostile-control 127.0.0.1:7703
+```
+
+`-hostile-control` (or `TRUESEAL_RELAY_HOSTILE_CONTROL`) starts a **loopback-only** control listener — the bind address must resolve to 127.0.0.1/::1 or startup is refused. The harness drives it with newline-delimited JSON, one command and one response (`{"ok":true}` or `{"ok":false,"error":"..."}`) per line:
+
+| Command | Effect on the device's Receive Session |
+|---|---|
+| `{"cmd":"set","device":"*","drop":true}` | **drop** — withhold Deliver frames (blobs stay in the Inbox un-acked; clearing the rule and reconnecting re-delivers them) |
+| `{"cmd":"set","device":"*","corrupt":true}` | **corrupt** — flip one byte in the envelope inside the Deliver frame (signature/AEAD must fail client-side) |
+| `{"cmd":"set","device":"*","duplicate":true}` | **duplicate** — send every blob twice, same blob ID, same bytes |
+| `{"cmd":"set","device":"*","reorder":2}` | **reorder** — hold a window of N blobs, emit in reverse arrival order |
+| `{"cmd":"inject","device":"<64-hex>","envelope":"<hex>"}` | **inject** — deliver harness-supplied bytes (a fake Manifest or Sync from the Adversary Client; the relay cannot sign) under a synthetic blob ID (`≥ 2^62`); the client's ack of it is a silent store no-op |
+| `{"cmd":"replay","device":"<64-hex>","count":1}` | **replay** — re-deliver the last N blobs of the session's history with their original blob IDs (`count:0` = whole history) |
+| `{"cmd":"clear","device":"*"}` | resume honest delivery for the device |
+
+`device` is a full device key (64 hex chars) or `"*"` for every device without an exact entry; an exact entry beats the wildcard. Rules apply in the fixed order drop → corrupt → duplicate → reorder. Inject and replay target one device's live sessions and fail cleanly if none is connected.
+
+**A release binary cannot carry any of this.** The hook code and the control listener compile only under the tag; `SetDeliveryWrapper` exists only under the tag; release builds define no `-hostile-control` flag (passing it fails "flag provided but not defined"). CI proves it: it builds and tests both variants and asserts with `go tool nm` that no `internal/hostile` symbol reaches a normal build, and the Dockerfile fails its own build the same way. **The hostile binary is never published** — no release or candidate workflow builds with the tag, and no image ships it. It is a test tool for trueseal-e2e; even so, its logs follow the same privacy rules as every mode: no peer addresses, no payload bytes.
+
 ### Compose env vars (`.env`)
 
 | Variable | Default | |
