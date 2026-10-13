@@ -400,3 +400,51 @@ sqlite_path = "/var/lib/trueseal-relay/inbox.db"
 		t.Error("TOML must not enable dev mode — only -dev / TRUESEAL_RELAY_DEV may (ADR-0012)")
 	}
 }
+
+// RELAY-16: config/example.toml is the operator-facing annotated example.
+// Every value in it is a DEFAULT by contract — load it and pin each value
+// against the package defaults so the example can never drift from the
+// code it documents.
+func TestConfig_ExampleTomlMatchesDefaults(t *testing.T) {
+	cfg, err := config.Load(filepath.Join("..", "..", "config", "example.toml"))
+	if err != nil {
+		t.Fatalf("config/example.toml must load: %v", err)
+	}
+	if cfg.Relay.ListenPush != ":7701" || cfg.Relay.ListenReceive != ":7700" || cfg.Relay.ListenHealth != ":7702" {
+		t.Fatalf("listen addresses drifted: %+v", cfg.Relay)
+	}
+	if cfg.Relay.TTL != config.DefaultTTL {
+		t.Fatalf("ttl = %v, want the default %v", cfg.Relay.TTL, config.DefaultTTL)
+	}
+	if cfg.Relay.ReapInterval != config.DefaultReapInterval {
+		t.Fatalf("reap_interval = %v, want %v", cfg.Relay.ReapInterval, config.DefaultReapInterval)
+	}
+	if cfg.Relay.MaxEnvelopeBytes != config.DefaultMaxEnvelopeBytes {
+		t.Fatalf("max_envelope_bytes = %d, want %d", cfg.Relay.MaxEnvelopeBytes, config.DefaultMaxEnvelopeBytes)
+	}
+	if cfg.Relay.MaxConnections != 0 {
+		t.Fatalf("max_connections = %d, want 0 (documented no-limit)", cfg.Relay.MaxConnections)
+	}
+	if cfg.Relay.HandshakeDeadline != config.DefaultHandshakeDeadline ||
+		cfg.Relay.PushSessionDeadline != config.DefaultPushSessionDeadline ||
+		cfg.Relay.ReceiveIdleDeadline != config.DefaultReceiveIdleDeadline ||
+		cfg.Relay.WriteDeadline != config.DefaultWriteDeadline {
+		t.Fatalf("deadlines drifted: %+v", cfg.Relay)
+	}
+	if cfg.Relay.ShutdownDrain != config.DefaultShutdownDrain {
+		t.Fatalf("shutdown_drain = %v, want %v", cfg.Relay.ShutdownDrain, config.DefaultShutdownDrain)
+	}
+	if cfg.Relay.MaxBlobsPerInbox != config.DefaultMaxBlobsPerInbox ||
+		cfg.Relay.MaxBytesPerInbox != config.DefaultMaxBytesPerInbox ||
+		cfg.Relay.PushRatePerSecond != config.DefaultPushRatePerSecond ||
+		cfg.Relay.PushRateBurst != config.DefaultPushRateBurst ||
+		cfg.Relay.MaxReceiveSessionsPerDevice != config.DefaultMaxReceiveSessionsPerDevice {
+		t.Fatalf("abuse limits drifted: %+v", cfg.Relay)
+	}
+	if cfg.Store.Type != "sqlite" {
+		t.Fatalf("store.type = %q, want sqlite", cfg.Store.Type)
+	}
+	if cfg.Relay.KeypairPath == "" || cfg.Store.SQLitePath == "" {
+		t.Fatal("the example must set the two required paths")
+	}
+}

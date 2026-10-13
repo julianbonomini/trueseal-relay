@@ -212,7 +212,7 @@ Abuse limits and deadlines follow ADR-0012: every limit is keyed on the recipien
 
 Every numeric knob is explicit: an unset knob takes its default, but an explicit zero or negative value refuses startup with a clear message (omit the setting to use the default). The two protocol ceilings — the 30-day TTL cap and the 65,482-byte envelope limit — may only be lowered; a higher value refuses startup (RELAY-8, sync ADR-0025/0034).
 
-Full annotated example: [`config/relay.toml`](config/relay.toml).
+Full annotated example: [`config/example.toml`](config/example.toml) — every value is the default, pinned against the code by a test. Under docker compose, prefer the env-var path (`.env.example`); the image ships no config file.
 
 ### Hostile Relay (e2e test builds only)
 
