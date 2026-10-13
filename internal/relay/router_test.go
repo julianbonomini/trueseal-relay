@@ -209,6 +209,78 @@ func TestRouter_TwoConcurrentReceiveSessions_PeekBothSeeBlob(t *testing.T) {
 	}
 }
 
+// RELAY-7: each Blob is delivered once per Receive Session. Two pushes after
+// connect with no acks: the second notify must deliver ONLY the new Blob —
+// un-acked Blobs re-deliver on a NEW Receive Session, not on every notify
+// (ADR-0009; sync ADR-0026).
+func TestRouter_NotifyDeliversEachBlobOncePerSession(t *testing.T) {
+	r := newRouter(t)
+	ctx := context.Background()
+
+	devCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	ch := r.OnReceiveConnect(devCtx, recipientA)
+
+	readBlob := func() string {
+		t.Helper()
+		select {
+		case got := <-ch:
+			return string(got.Envelope)
+		case <-time.After(2 * time.Second):
+			t.Fatal("want a delivered blob, timed out")
+			return ""
+		}
+	}
+
+	if err := r.OnPush(ctx, pushBody(make32(0xAA), []byte("one"))); err != nil {
+		t.Fatalf("OnPush one: %v", err)
+	}
+	if got := readBlob(); got != "one" {
+		t.Fatalf("want first delivery %q, got %q", "one", got)
+	}
+
+	if err := r.OnPush(ctx, pushBody(make32(0xAA), []byte("two"))); err != nil {
+		t.Fatalf("OnPush two: %v", err)
+	}
+	if got := readBlob(); got != "two" {
+		t.Fatalf("want second delivery %q, got %q — blob one must not be re-sent on this session", "two", got)
+	}
+
+	// Nothing more arrives on this session. The 300 ms negative window is
+	// generous for slow CI: a duplicate from a whole-inbox re-flush is the
+	// goroutine's immediate next action, so red stays deterministic.
+	select {
+	case extra := <-ch:
+		t.Fatalf("want no further delivery on this session, got %q", extra.Envelope)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// RELAY-7: arrival order is preserved across notifies (in-order delivery,
+// sync ADR-0026).
+func TestRouter_DeliveryOrderAcrossNotifies(t *testing.T) {
+	r := newRouter(t)
+	ctx := context.Background()
+
+	devCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	ch := r.OnReceiveConnect(devCtx, recipientA)
+
+	for _, payload := range []string{"first", "second", "third"} {
+		if err := r.OnPush(ctx, pushBody(make32(0xAA), []byte(payload))); err != nil {
+			t.Fatalf("OnPush %s: %v", payload, err)
+		}
+		select {
+		case got := <-ch:
+			if string(got.Envelope) != payload {
+				t.Fatalf("want %q, got %q — arrival order broken", payload, got.Envelope)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("want %q delivered, timed out", payload)
+		}
+	}
+}
+
 // RELAY-1 regression: a DeliverAck from Device B for a Blob ID that lives in
 // Device A's Inbox must be a silent no-op — the Blob stays in A's Inbox and is
 // still delivered to A (issue #38; sync ADR-0026).
