@@ -75,6 +75,33 @@ func sendPushFrame(t *testing.T, conn net.Conn, cs *noise.CipherState, body []by
 	}
 }
 
+// testRelayKey generates a throwaway relay keypair.
+func testRelayKey(t *testing.T) noise.DHKey {
+	t.Helper()
+	k, err := noise.DH25519.GenerateKeypair(nil)
+	if err != nil {
+		t.Fatalf("relay key: %v", err)
+	}
+	return k
+}
+
+// readLine reads from conn until (and including) a newline.
+func readLine(t *testing.T, conn net.Conn) string {
+	t.Helper()
+	line := make([]byte, 0, 32)
+	buf := make([]byte, 1)
+	for len(line) < 64 {
+		if _, err := io.ReadFull(conn, buf); err != nil {
+			t.Fatalf("read line: %v", err)
+		}
+		line = append(line, buf[0])
+		if buf[0] == '\n' {
+			break
+		}
+	}
+	return string(line)
+}
+
 // readErrorFrame reads one relay→client message and returns the parsed Error
 // frame body, failing unless it is an Error frame.
 func readErrorFrame(t *testing.T, conn net.Conn, cs *noise.CipherState) []byte {
