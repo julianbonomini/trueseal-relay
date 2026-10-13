@@ -95,7 +95,7 @@ func TestE2E_PushDeliverOnline(t *testing.T) {
 	go func() {
 		session.AcceptPush(serverPush, relayKey, router) //nolint:errcheck
 	}()
-	doPushSession(t, clientPush, relayKey.Public, deviceKey.Public, envelope)
+	sent := doPushSession(t, clientPush, relayKey.Public, deviceKey.Public, envelope)
 	clientPush.Close()
 
 	// Device B receives the Deliver frame
@@ -113,8 +113,8 @@ func TestE2E_PushDeliverOnline(t *testing.T) {
 	if !ok {
 		t.Fatal("DecodeDeliverBody failed")
 	}
-	if string(deliveredEnv) != string(envelope) {
-		t.Errorf("want %q, got %q", envelope, deliveredEnv)
+	if string(deliveredEnv) != string(sent) {
+		t.Errorf("want verbatim round-trip of the pushed envelope, got %q", deliveredEnv)
 	}
 	_ = receiveCtx
 }
@@ -136,7 +136,7 @@ func TestE2E_PushDeliverOffline(t *testing.T) {
 	}()
 	// doPushSession returns after the Ack is received, meaning the blob is
 	// already committed to the store. No sleep needed after this point.
-	doPushSession(t, clientPush, relayKey.Public, deviceKey.Public, envelope)
+	sent := doPushSession(t, clientPush, relayKey.Public, deviceKey.Public, envelope)
 	clientPush.Close()
 
 	// Device connects after the push
@@ -162,8 +162,8 @@ func TestE2E_PushDeliverOffline(t *testing.T) {
 	if !ok {
 		t.Fatal("DecodeDeliverBody failed")
 	}
-	if string(deliveredEnv) != string(envelope) {
-		t.Errorf("want %q, got %q", envelope, deliveredEnv)
+	if string(deliveredEnv) != string(sent) {
+		t.Errorf("want verbatim round-trip of the pushed envelope, got %q", deliveredEnv)
 	}
 }
 
@@ -183,7 +183,7 @@ func TestE2E_TCPDropBeforeAck_Redelivers(t *testing.T) {
 	go func() {
 		session.AcceptPush(serverPush, relayKey, router) //nolint:errcheck
 	}()
-	doPushSession(t, clientPush, relayKey.Public, deviceKey.Public, envelope)
+	sent := doPushSession(t, clientPush, relayKey.Public, deviceKey.Public, envelope)
 	clientPush.Close()
 
 	// First Receive Session — receive Deliver but drop TCP (no DeliverAck)
@@ -230,15 +230,18 @@ func TestE2E_TCPDropBeforeAck_Redelivers(t *testing.T) {
 	if !ok {
 		t.Fatal("DecodeDeliverBody failed on reconnect")
 	}
-	if string(deliveredEnv) != string(envelope) {
-		t.Errorf("want %q re-delivered, got %q", envelope, deliveredEnv)
+	if string(deliveredEnv) != string(sent) {
+		t.Errorf("want verbatim re-delivery of the pushed envelope, got %q", deliveredEnv)
 	}
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 // doPushSession performs a full NK push: version exchange + handshake + Push frame + receive Ack.
-func doPushSession(t *testing.T, conn net.Conn, relayPub []byte, recipientPub []byte, envelope []byte) {
+// doPushSession pushes payload to recipientPub over one anonymous NK Push
+// Session and returns the exact proto Envelope bytes sent (the payload
+// wrapped by protoEnvelope) so callers can assert verbatim round-trip.
+func doPushSession(t *testing.T, conn net.Conn, relayPub []byte, recipientPub []byte, payload []byte) []byte {
 	t.Helper()
 	prologue := clientVersionExchange(t, conn)
 	cfg := noise.Config{
@@ -265,9 +268,12 @@ func doPushSession(t *testing.T, conn net.Conn, relayPub []byte, recipientPub []
 		t.Fatalf("NK read resp: %v", err)
 	}
 
-	body := make([]byte, 32+len(envelope))
+	var recipient [32]byte
+	copy(recipient[:], recipientPub)
+	wrapped := protoEnvelope(recipient, payload)
+	body := make([]byte, 32+len(wrapped))
 	copy(body[:32], recipientPub)
-	copy(body[32:], envelope)
+	copy(body[32:], wrapped)
 
 	frame, err := cs1.Encrypt(nil, nil, session.Frame(session.MsgTypePush, body))
 	if err != nil {
@@ -277,6 +283,7 @@ func doPushSession(t *testing.T, conn net.Conn, relayPub []byte, recipientPub []
 
 	conn.SetDeadline(time.Now().Add(2 * time.Second))
 	readMsg(t, conn) // Ack
+	return wrapped
 }
 
 // doXXHandshake performs a Noise XX handshake as the device (initiator).

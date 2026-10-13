@@ -79,7 +79,12 @@ func TestRouter_PushRoutingPrefixMismatch_Refused(t *testing.T) {
 		t.Fatal("test setup: wrong prefix accidentally matches")
 	}
 
-	err := r.OnPush(ctx, pushBody(wrongPrefix, envelope))
+	// Raw body: the real vector Envelope under a prefix that isn't its
+	// recipient_pub.
+	body := make([]byte, 32+len(envelope))
+	copy(body[:32], wrongPrefix[:])
+	copy(body[32:], envelope)
+	err := r.OnPush(ctx, body)
 	if !errors.Is(err, relay.ErrRecipientMismatch) {
 		t.Fatalf("OnPush with mismatched prefix: err = %v, want ErrRecipientMismatch (maps to permanent malformed)", err)
 	}
@@ -95,7 +100,10 @@ func TestRouter_PushRoutingPrefixMatch_Accepted(t *testing.T) {
 	ctx := context.Background()
 
 	envelope, addressedTo := vectorEnvelope(t)
-	if err := r.OnPush(ctx, pushBody(addressedTo, envelope)); err != nil {
+	body := make([]byte, 32+len(envelope))
+	copy(body[:32], addressedTo[:])
+	copy(body[32:], envelope)
+	if err := r.OnPush(ctx, body); err != nil {
 		t.Fatalf("OnPush with matching prefix: %v", err)
 	}
 	if n := storedCount(t, st, addressedTo[:]); n != 1 {
@@ -129,8 +137,17 @@ func TestRouter_PushEnvelopeRecipient_Unverifiable_Refused(t *testing.T) {
 		// Empty envelope.
 		"empty envelope": {},
 	}
+	// These envelopes are deliberately NOT well-formed, so they can't go
+	// through pushBody (which wraps its payload in a valid envelope) —
+	// build the raw [prefix][envelope] body directly.
+	rawBody := func(envelope []byte) []byte {
+		body := make([]byte, 32+len(envelope))
+		copy(body[:32], prefix[:])
+		copy(body[32:], envelope)
+		return body
+	}
 	for name, envelope := range cases {
-		err := r.OnPush(ctx, pushBody(prefix, envelope))
+		err := r.OnPush(ctx, rawBody(envelope))
 		if !errors.Is(err, relay.ErrPushRecipientMalformed) {
 			t.Errorf("%s: err = %v, want ErrPushRecipientMalformed (maps to permanent malformed)", name, err)
 		}

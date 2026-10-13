@@ -75,6 +75,19 @@ func (r *Router) OnPush(ctx context.Context, body []byte) error {
 		return fmt.Errorf("%w: %d bytes (limit %d)", ErrEnvelopeTooLarge, len(envelope), r.maxEnvelopeBytes)
 	}
 
+	// RELAY-3 (#40, threat-model decision): the routing prefix must BE the
+	// Envelope's own recipient_pub — the one field sync ADR-0031 leaves
+	// Relay-readable. A pusher that labels a blob with one Inbox's prefix
+	// while the Envelope addresses another is refused (permanent malformed)
+	// and nothing is stored. The payload is never inspected.
+	recipient, err := extractEnvelopeRecipient(envelope)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrPushRecipientMalformed, err)
+	}
+	if recipient != key {
+		return ErrRecipientMismatch
+	}
+
 	if err := r.store.Put(ctx, key[:], envelope, r.ttl); err != nil {
 		return err
 	}
