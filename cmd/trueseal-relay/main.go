@@ -345,7 +345,7 @@ func serve(args []string) {
 			log.Fatalf("sqlite store: %v", err)
 		}
 		defer s.Close()
-		if *resetStore {
+		if s.WasReset() {
 			log.Printf("store reset: dropped every inbox at the operator's -reset-store (ADR-0013); keypair untouched")
 		}
 		log.Printf("inbox store: sqlite, store version %d", s.StoreVersion())

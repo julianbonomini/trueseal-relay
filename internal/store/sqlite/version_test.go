@@ -343,3 +343,66 @@ func TestFixture_StoreV1_BlobsDeliverable(t *testing.T) {
 
 // Guard: the InboxStore contract still holds through the versioned open.
 var _ store.InboxStore = (*sqlitestore.Store)(nil)
+
+// Criterion (orchestrator decision 2026-10-13): refuse-newer wins over the
+// reset flag, even on a declared Store Reset release. TooNew protects data
+// written by a future release; a downgrade-with-reset must never wipe it.
+// Before RELAY-16 the reset branch ran first and would have dropped the
+// newer store.
+func TestNewerStore_ResetFlagStillRefused(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "inbox.db")
+	s, err := sqlitestore.New(path)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := s.Put(context.Background(), repeatByte(0x44, 32), []byte("future-data"), time.Hour); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	s.Close()
+	rawExec(t, path, `PRAGMA user_version = 5`)
+	before := checksum(t, path)
+
+	_, err = sqlitestore.NewWithOptions(path, sqlitestore.Options{ResetDeclared: true, ResetRequested: true})
+	var tooNew *sqlitestore.TooNewError
+	if !errors.As(err, &tooNew) {
+		t.Fatalf("err = %v, want TooNewError even with the reset flag on a declared release", err)
+	}
+	if after := checksum(t, path); after != before {
+		t.Fatal("the reset flag touched a newer store — refuse-newer must win")
+	}
+}
+
+// WasReset reports an actual reset only: the flag on a fresh store is not
+// a reset, and the log must not claim one (RELAY-16 parked note).
+func TestWasReset(t *testing.T) {
+	t.Run("false on a fresh store even with the flag", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "inbox.db")
+		s, err := sqlitestore.NewWithOptions(path, sqlitestore.Options{ResetDeclared: true, ResetRequested: true})
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		defer s.Close()
+		if s.WasReset() {
+			t.Fatal("WasReset = true on a fresh store — nothing was dropped")
+		}
+	})
+	t.Run("true after a real reset", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "inbox.db")
+		s, err := sqlitestore.New(path)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		if err := s.Put(context.Background(), repeatByte(0x55, 32), []byte("x"), time.Hour); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		s.Close()
+		s2, err := sqlitestore.NewWithOptions(path, sqlitestore.Options{ResetDeclared: true, ResetRequested: true})
+		if err != nil {
+			t.Fatalf("reset open: %v", err)
+		}
+		defer s2.Close()
+		if !s2.WasReset() {
+			t.Fatal("WasReset = false after a real reset")
+		}
+	})
+}

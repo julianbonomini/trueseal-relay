@@ -171,6 +171,15 @@ func openStore(path string, opts Options, chain []migration, target int) (*Store
 		return nil, err
 	}
 
+	// A newer store is refused before ANYTHING else — including a declared
+	// Store Reset release with the operator's flag. TooNew exists to protect
+	// data written by a future release; letting -reset-store win here would
+	// turn a downgrade-with-reset into silent destruction of that data
+	// (orchestrator decision, 2026-10-13).
+	if p.exists && p.version > target {
+		return nil, &TooNewError{Found: p.version, Supported: target}
+	}
+
 	// A declared release with the operator's flag resets, whatever the
 	// store's state — that is the flag's whole meaning (ADR-0013).
 	if p.exists && opts.ResetDeclared && opts.ResetRequested {
@@ -186,8 +195,6 @@ func openStore(path string, opts Options, chain []migration, target int) (*Store
 		return adoptUnversioned(path, target)
 	case p.version == 0:
 		return nil, &UnmigratableError{Found: 0, Supported: target, ResetAvailable: opts.ResetDeclared}
-	case p.version > target:
-		return nil, &TooNewError{Found: p.version, Supported: target}
 	case p.version == target:
 		return openCurrent(path, target)
 	default:
@@ -344,5 +351,5 @@ func resetStore(path string, target int) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	return &Store{db: db, version: target}, nil
+	return &Store{db: db, version: target, wasReset: true}, nil
 }

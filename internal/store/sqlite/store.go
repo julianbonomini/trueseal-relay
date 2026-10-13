@@ -26,8 +26,9 @@ CREATE INDEX IF NOT EXISTS idx_inbox_expires_at ON inbox(expires_at);
 // Safe for concurrent use — all access serialised through a single connection.
 // See ADR-0003 (durable until delivery) and ADR-0007 (hexagonal architecture).
 type Store struct {
-	db      *sql.DB
-	version int
+	db       *sql.DB
+	version  int
+	wasReset bool
 }
 
 // New opens (or creates) a SQLite database at path through the versioned
@@ -49,6 +50,14 @@ func NewWithOptions(path string, opts Options) (*Store, error) {
 // number the Compatibility Table lists for this release.
 func (s *Store) StoreVersion() int {
 	return s.version
+}
+
+// WasReset reports whether opening this store actually performed a Store
+// Reset (ADR-0013). It lets callers log accurately: the -reset-store flag
+// on a fresh or adopted store performs no reset, and claiming one in the
+// log would mislead the operator.
+func (s *Store) WasReset() bool {
+	return s.wasReset
 }
 
 // Close releases the database connection.

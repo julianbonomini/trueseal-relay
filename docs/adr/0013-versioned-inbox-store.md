@@ -1,6 +1,6 @@
 # The inbox store is versioned; a relay Store Reset needs the Operator's opt-in
 
-Status: accepted (decided 2026-09-30 in [trueseal-roadmap#20](https://github.com/julianbonomini/trueseal-roadmap/issues/20); not yet implemented). This is the relay side of trueseal-sync ADR-0032, and it applies to the supported SQLite backend (ADR-0012).
+Status: accepted (decided 2026-09-30 in [trueseal-roadmap#20](https://github.com/julianbonomini/trueseal-roadmap/issues/20)). Implemented 2026-10-13 (RELAY-13, #33): probe-first versioned open, adoption of unversioned stores, single-transaction whole-chain migrations, the operator's `-reset-store` honoured only on a declared Store Reset release, and typed newer-store refusal with byte-for-byte proof. Ordering rule (2026-10-13): refuse-newer wins over the reset flag even on a declared release — TooNew protects data written by a future release from a downgrade-with-reset. This is the relay side of trueseal-sync ADR-0032, and it applies to the supported SQLite backend (ADR-0012).
 
 The relay store has no schema version today. Self-hosters upgrade by pulling a new container, so a format change would either break the Node or quietly lose queued Blobs.
 
