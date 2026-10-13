@@ -6,11 +6,13 @@
 # Usage:
 #   1. Start Postgres:
 #        docker-compose -f docker-compose.cluster.yml up -d db
-#   2. Generate keypair once:
-#        docker-compose -f docker-compose.cluster.yml run --rm relay-1 \
-#          /trueseal-relay -genkey -keyout /data/keypair.hex
-#   3. Start everything:
+#   2. Start everything:
 #        docker-compose -f docker-compose.cluster.yml up -d
+#
+# No manual keypair step: the first Node to start generates /data/keypair.hex
+# in the shared relay-data volume (mode 0600, create-exclusive); a racing
+# second Node loads the winner's key. Print what clients configure with:
+#   docker-compose -f docker-compose.cluster.yml exec relay-1 /trueseal-relay pubkey
 #
 # IMPORTANT: Replace POSTGRES_PASSWORD and the DSN password with a strong
 # secret before deploying.

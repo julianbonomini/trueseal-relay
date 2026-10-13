@@ -228,6 +228,8 @@ To bring your own key instead:
 
 The public key is printed on first start and by `pubkey`. The private key lives in the Docker volume and is never baked into the image. Changing the key breaks every client configuration (ADR-0012), so back it up once.
 
+Clustered deployments (`docker-compose.cluster.yml`, experimental per ADR-0012): the keypair auto-generates into the shared volume on first start; print it with `docker compose -f docker-compose.cluster.yml exec relay-1 /trueseal-relay pubkey`.
+
 ---
 
 ## Building
