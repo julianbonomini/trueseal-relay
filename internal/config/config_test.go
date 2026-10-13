@@ -341,3 +341,62 @@ func TestConfig_NonPositiveLimitsEnvRefuses(t *testing.T) {
 		})
 	}
 }
+
+// RELAY-9 (ADR-0012): dev mode is enabled ONLY by TRUESEAL_RELAY_DEV (or
+// the -dev flag, which main ORs in) — never by TOML, so verbose logging
+// stays an explicit per-invocation choice an operator cannot forget in a
+// config file. Only a recognisable truthy value enables it.
+func TestConfig_DevModeEnvOnly(t *testing.T) {
+	cases := []struct {
+		name string
+		env  string // empty = unset
+		want bool
+	}{
+		{"unset", "", false},
+		{"1", "1", true},
+		{"true", "true", true},
+		{"TRUE", "TRUE", true},
+		{"0", "0", false},
+		{"false", "false", false},
+		{"a typo is not consent", "yes", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("TRUESEAL_RELAY_KEYPAIR_PATH", "/data/keypair.hex")
+			t.Setenv("TRUESEAL_RELAY_STORE_SQLITE_PATH", "/data/inbox.db")
+			t.Setenv("TRUESEAL_RELAY_DEV", tc.env)
+			cfg, err := config.Load("")
+			if err != nil {
+				t.Fatalf("load: %v", err)
+			}
+			if cfg.Relay.Dev != tc.want {
+				t.Errorf("TRUESEAL_RELAY_DEV=%q: Dev = %v, want %v", tc.env, cfg.Relay.Dev, tc.want)
+			}
+		})
+	}
+}
+
+// A dev = true line in the TOML file has NO effect (ADR-0012 names the
+// flag and the env var only).
+func TestConfig_DevModeNotFromTOML(t *testing.T) {
+	t.Setenv("TRUESEAL_RELAY_KEYPAIR_PATH", "/data/keypair.hex")
+	t.Setenv("TRUESEAL_RELAY_STORE_SQLITE_PATH", "/data/inbox.db")
+	path := writeFile(t, `
+[relay]
+keypair_path   = "/etc/trueseal-relay/keypair.hex"
+listen_push    = ":7701"
+listen_receive = ":7700"
+dev            = true
+
+[store]
+type        = "sqlite"
+sqlite_path = "/var/lib/trueseal-relay/inbox.db"
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Relay.Dev {
+		t.Error("TOML must not enable dev mode — only -dev / TRUESEAL_RELAY_DEV may (ADR-0012)")
+	}
+}

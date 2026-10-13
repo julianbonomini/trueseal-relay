@@ -1,11 +1,13 @@
 package main
 
 import (
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // RELAY-8 (issue #45) completion criterion 3, end-to-end: the REAL binary
@@ -54,16 +56,28 @@ func TestServe_StartsAtTheCeilings(t *testing.T) {
 	keyPath := filepath.Join(t.TempDir(), "keypair.hex")
 	recvPort, pushPort := freePort(t), freePort(t)
 
-	cmd, _ := startRelayWithEnv(t, keyPath,
+	_, logs := startRelayWithEnv(t, keyPath,
 		"TRUESEAL_RELAY_LISTEN_RECEIVE=127.0.0.1:"+recvPort,
 		"TRUESEAL_RELAY_LISTEN_PUSH=127.0.0.1:"+pushPort,
 		"TRUESEAL_RELAY_TTL=720h",
 		"TRUESEAL_RELAY_MAX_ENVELOPE_BYTES=65482",
 	)
-	// startRelayWithEnv's cleanup SIGTERMs the process; if the relay had
-	// refused to start, Wait would already have returned a non-zero exit —
-	// assert it is still running.
-	if cmd.ProcessState != nil && cmd.ProcessState.Exited() {
-		t.Fatalf("relay exited at the ceilings: %v", cmd.ProcessState)
+	// Assert ACTUAL liveness (RELAY-9 note: the old ProcessState check was
+	// dead — it is always nil before Wait, so the test passed even if the
+	// binary instantly refused). Proof of life: the startup line appears
+	// and both listeners accept a connection.
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(logs.String(), "trueseal-relay running") {
+		if time.Now().After(deadline) {
+			t.Fatalf("relay never reached the serving state at the ceilings. Output:\n%s", logs.String())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	for _, port := range []string{recvPort, pushPort} {
+		conn, err := net.DialTimeout("tcp", "127.0.0.1:"+port, 2*time.Second)
+		if err != nil {
+			t.Fatalf("listener :%s not accepting at the ceilings: %v", port, err)
+		}
+		_ = conn.Close()
 	}
 }

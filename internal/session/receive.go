@@ -3,13 +3,38 @@ package session
 import (
 	"context"
 	"io"
-	"log"
 	"net"
+	"sync/atomic"
 	"time"
 
 	"github.com/flynn/noise"
+	"github.com/julianbonomini/trueseal-relay/internal/logging"
 	"github.com/julianbonomini/trueseal-relay/internal/relay"
 )
+
+// logger is the session package's logging seam (RELAY-9, ADR-0012).
+// Package-level because the Accept* entry points are called from main and
+// many tests; it is set ONCE at process start, before any listener
+// goroutine runs, and never mutated afterwards. The zero value is a no-op
+// logger, so tests that never call SetLogger log nothing.
+var logger atomic.Pointer[logging.Logger]
+
+// SetLogger routes the session package's logging. nil restores the no-op
+// default. Call once from main before listeners start.
+func SetLogger(l *logging.Logger) {
+	if l == nil {
+		l = logging.Nop()
+	}
+	logger.Store(l)
+}
+
+// log returns the package logger, never nil.
+func logg() *logging.Logger {
+	if l := logger.Load(); l != nil {
+		return l
+	}
+	return logging.Nop()
+}
 
 // AcceptReceive handles an inbound Noise XX Receive Session.
 // Mutual authentication — relay and device verify each other's static keys.
@@ -118,6 +143,10 @@ func acceptReceiveSession(conn net.Conn, relayKey noise.DHKey, handler Handler, 
 	var deviceKey relay.RecipientKey
 	copy(deviceKey[:], hs.PeerStatic())
 
+	// RELAY-9: dev-mode session lifecycle detail — a key PREFIX only
+	// (ADR-0012), never an address.
+	logg().Debugf("recv: XX handshake complete key=%x", deviceKey[:4])
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -198,8 +227,10 @@ func acceptReceiveSession(conn net.Conn, relayKey noise.DHKey, handler Handler, 
 			}
 			if err := handler.OnDeliverAck(ctx, deviceKey, int64(blobID)); err != nil {
 				// Field-free apart from the store error (ADR-0012): the
-				// device key and Blob ID are client metadata.
-				log.Printf("recv: failed to delete acknowledged blob: %v", err)
+				// device key and Blob ID are client metadata. A store error
+				// never wraps a peer address.
+				logg().Printf("recv: failed to delete acknowledged blob: %v", err)
+				logg().Debugf("recv: delete failed device=%x blob_id=%d", deviceKey[:4], blobID)
 			}
 		default:
 			// A known frame type that does not belong on a Receive Session
