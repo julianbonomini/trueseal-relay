@@ -25,6 +25,11 @@ import (
 	sqlitestore "github.com/julianbonomini/trueseal-relay/internal/store/sqlite"
 )
 
+// logConnectionRefused reports a connection-limit refusal.
+func logConnectionRefused(kind string, max int, addr net.Addr) {
+	log.Printf("%s: connection limit reached (%d) — rejecting %s", kind, max, addr)
+}
+
 func main() {
 	// Privacy: log only public keys and connection events — never envelope content.
 	cfgPath := flag.String("config", "relay.toml", "path to TOML config file")
@@ -135,7 +140,7 @@ func main() {
 			select {
 			case pushSem <- struct{}{}:
 			default:
-				log.Printf("push: connection limit reached (%d) — rejecting %s", max, conn.RemoteAddr())
+				logConnectionRefused("push", max, conn.RemoteAddr())
 				conn.Close()
 				continue
 			}
@@ -168,7 +173,7 @@ func main() {
 			select {
 			case recvSem <- struct{}{}:
 			default:
-				log.Printf("recv: connection limit reached (%d) — rejecting %s", max, conn.RemoteAddr())
+				logConnectionRefused("recv", max, conn.RemoteAddr())
 				conn.Close()
 				continue
 			}
