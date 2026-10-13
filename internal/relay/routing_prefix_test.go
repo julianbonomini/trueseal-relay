@@ -134,6 +134,9 @@ func TestRouter_PushEnvelopeRecipient_Unverifiable_Refused(t *testing.T) {
 		"duplicated recipient_pub": duplicated,
 		// Field claims 32 bytes but the envelope ends early.
 		"truncated mid-field": {0x1a, 0x20, 0x01, 0x02},
+		// Field number 0 is invalid in protobuf — a real decoder (prost on
+		// the client) rejects the whole message, so the relay refuses too.
+		"invalid field number 0": append(append([]byte{0x1a, 0x20}, prefix[:]...), 0x00, 0x01),
 		// Empty envelope.
 		"empty envelope": {},
 	}

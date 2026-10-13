@@ -65,12 +65,25 @@ func pushBodySized(recipient [32]byte, envelopeSize int) []byte {
 	// length varint. Solve for the payload length, accounting for the
 	// varint's own size.
 	payload := envelopeSize - 34 - 1
-	for l := varintLen(uint64(payload)); payload+l+35 != envelopeSize; {
+	// The payload length and its varint's own size must agree; normally a
+	// fixed point exists within a couple of iterations, but cap the loop so
+	// a pathological size (varint-boundary no-fixed-point) fails loudly
+	// instead of spinning.
+	for i := 0; i < 10; i++ {
+		l := varintLen(uint64(payload))
+		if payload+l+35 == envelopeSize {
+			break
+		}
 		payload = envelopeSize - 35 - l
-		l = varintLen(uint64(payload))
+		if i == 9 {
+			panic("pushBodySized: no fixed point for envelopeSize — not representable as a well-formed envelope")
+		}
 	}
 	if payload < 0 {
 		panic("envelopeSize too small for a well-formed envelope")
+	}
+	if got := 35 + varintLen(uint64(payload)) + payload; got != envelopeSize {
+		panic("pushBodySized: no fixed point for envelopeSize — not representable as a well-formed envelope")
 	}
 	return pushBody(recipient, make([]byte, payload))
 }

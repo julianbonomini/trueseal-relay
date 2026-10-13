@@ -30,6 +30,14 @@ func extractEnvelopeRecipient(envelope []byte) (RecipientKey, error) {
 		fieldNum := tag >> 3
 		wireType := tag & 0x7
 
+		if fieldNum == 0 {
+			// Field number 0 is invalid in protobuf — a real decoder (prost
+			// on the client) rejects the whole message. Refuse it too rather
+			// than skip it, so the relay never accepts an Envelope the
+			// recipient would reject wholesale.
+			return key, fmt.Errorf("invalid field number 0 at offset %d", pos-n)
+		}
+
 		switch wireType {
 		case 0: // varint
 			_, n := readVarint(envelope[pos:])

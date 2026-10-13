@@ -237,10 +237,10 @@ func TestE2E_TCPDropBeforeAck_Redelivers(t *testing.T) {
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-// doPushSession performs a full NK push: version exchange + handshake + Push frame + receive Ack.
 // doPushSession pushes payload to recipientPub over one anonymous NK Push
-// Session and returns the exact proto Envelope bytes sent (the payload
-// wrapped by protoEnvelope) so callers can assert verbatim round-trip.
+// Session (version exchange + handshake + Push frame + Ack) and returns
+// the exact proto Envelope bytes sent (the payload wrapped by
+// protoEnvelope) so callers can assert verbatim round-trip.
 func doPushSession(t *testing.T, conn net.Conn, relayPub []byte, recipientPub []byte, payload []byte) []byte {
 	t.Helper()
 	prologue := clientVersionExchange(t, conn)

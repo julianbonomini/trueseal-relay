@@ -60,16 +60,24 @@ The Push frame body has this exact byte layout:
 [recipient_pub: 32 bytes][envelope: variable]
 ```
 
-- `recipient_pub` — the recipient's X25519 static public key, raw bytes (no encoding). The relay reads `body[0:32]` as the inbox routing key. **Never proto-decoded** — the relay routes by address, not content.
-- `envelope` — a protobuf-encoded `Envelope` message (`trueseal.sync.v0.Envelope`). Stored verbatim, forwarded verbatim. The relay never deserialises this field.
+- `recipient_pub` — the recipient's X25519 static public key, raw bytes (no encoding). The relay reads `body[0:32]` as the inbox routing key. The relay routes by address, not content.
+- `envelope` — a protobuf-encoded `Envelope` message (`trueseal.sync.v0.Envelope`). Stored verbatim, forwarded verbatim. The relay never deserialises this field — with exactly one exception, amended below.
 
 The Deliver frame body contains an 8-byte opaque blob_id prefix followed by the envelope bytes: `[blob_id: 8 bytes u64 BE][envelope bytes]`. The relay stores `body[32:]` of the Push frame and delivers it as the envelope portion of the Deliver body. trueseal-sync recipients strip the first 8 bytes, then call `Envelope::decode(remaining)` on the Deliver body.
 
 **Why raw prefix, not proto-parsed `recipient_pub`?**
-Parsing proto on the relay would introduce a proto decode dependency on every push. The relay is a zero-knowledge router — it must route, not interpret. A raw fixed-width prefix is faster, simpler, and avoids any dependency on the Envelope proto schema. The relay is explicitly not a consumer of the trueseal-sync Envelope format.
+The relay is a zero-knowledge router — it must route, not interpret. It is explicitly not a consumer of the trueseal-sync Envelope format, and it carries no protobuf dependency.
+
+*Amended (RELAY-3, trueseal-relay#40; threat-model decision trueseal-roadmap#16):* the routing address is the raw prefix **verified against the one Envelope field the sealed-Envelope contract leaves Relay-readable** — `recipient_pub` (proto field 3, per sync ADR-0031; pinned by the sync test vectors). A minimal protobuf wire reader (not a generated decoder — no proto dependency) walks the Envelope's fields, skipping everything that isn't field 3, and refuses the push with the permanent `malformed` reason code (0x02) when:
+
+- the routing prefix and the Envelope's `recipient_pub` disagree (a pusher trying to file a Blob in an Inbox it isn't addressed to);
+- `recipient_pub` is missing, not exactly 32 bytes, or duplicated;
+- the Envelope's wire framing can't be walked at all.
+
+Nothing is stored for a refused push, no Ack is sent, and nothing about the refusal is logged in normal mode (ADR-0012). The relay reads no other field: the payload bytes are never touched, parsed, or inspected. "Routes by address, not content" still holds — the address is now the prefix *plus* the one field the sealed Envelope exposes, and they must agree.
 
 **Enforcement:**
-The relay validates `len(body) >= 32` — if not, the blob is rejected and no Ack is sent. The relay also enforces a configurable maximum envelope size (`relay.max_envelope_bytes`) on `body[32:]` — see below.
+The relay validates `len(body) >= 32` — if not, the blob is rejected and no Ack is sent. It enforces a configurable maximum envelope size (`relay.max_envelope_bytes`) on `body[32:]` (checked before the recipient verification above, so an oversized push is refused on size alone) — see below.
 
 ## DeliverAck semantics
 
