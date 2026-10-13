@@ -274,6 +274,9 @@ func serve(args []string) {
 	// detail — key prefixes, sizes, Blob IDs, session events — but NEVER
 	// payload bytes or peer addresses, in any mode.
 	devFlag := flag.Bool("dev", false, "dev logging mode: verbose per-message logs (never IP addresses); also TRUESEAL_RELAY_DEV=1")
+	// RELAY-14: -hostile-control exists ONLY in `hostile` tag builds; in a
+	// release build no such flag is defined and this returns nil.
+	hostileControl := registerHostileFlag()
 	flag.CommandLine.Parse(args)
 
 	// A positional argument means the caller's intent was lost — the doubled
@@ -374,6 +377,10 @@ func serve(args []string) {
 		MaxReceiveSessionsPerDevice: cfg.Relay.MaxReceiveSessionsPerDevice,
 	})
 	router.SetLogger(relayLog)
+	// RELAY-14: in `hostile` tag builds, install the injection engine and
+	// start its loopback-only control listener. A no-op in release builds.
+	stopHostile := maybeStartHostile(router, relayLog, hostileControl)
+	defer stopHostile()
 	reaper := store.NewReaper(inbox, cfg.Relay.ReapInterval)
 	reaper.SetLogger(relayLog)
 

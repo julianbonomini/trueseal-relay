@@ -51,6 +51,25 @@ type Router struct {
 	// log-free in normal mode; RELAY-9's dev mode surfaces them, with the
 	// running total attached).
 	refusals refusalCounters
+
+	// wrapper, when non-nil, wraps each Receive Session's delivery channel
+	// (RELAY-14, the Hostile Relay). It is set ONLY in builds with the
+	// `hostile` build tag — release builds have no way to install one: the
+	// setter exists only in wrap_hostile.go, and wrapDelivery (paired
+	// files) is an inlined passthrough without the tag.
+	wrapper DeliveryWrapper
+}
+
+// DeliveryWrapper transforms one Receive Session's stream of DeliveryBlobs
+// between the routing loop and the Deliver frame writer (RELAY-14). The
+// only implementation is the hostile engine, compiled behind the `hostile`
+// build tag; release builds never contain one.
+type DeliveryWrapper interface {
+	// WrapSession returns the channel the session layer reads. in is
+	// closed by the routing loop at teardown; implementations must
+	// propagate that close (after flushing any held blobs) so the
+	// session's teardown signal is preserved.
+	WrapSession(ctx context.Context, key RecipientKey, in <-chan DeliveryBlob) <-chan DeliveryBlob
 }
 
 // refusalCounters are the Router's per-class silent-refusal totals.
@@ -282,7 +301,10 @@ func (r *Router) OnReceiveConnect(ctx context.Context, deviceKey RecipientKey) (
 		}
 	}()
 
-	return deliverCh, nil
+	// RELAY-14: in `hostile` tag builds an installed wrapper transforms the
+	// stream (drop/duplicate/reorder/corrupt and the inject/replay
+	// surface). Without the tag this is an inlined passthrough.
+	return r.wrapDelivery(ctx, deviceKey, deliverCh), nil
 }
 
 // deliverNew sends every Inbox blob for key with an ID greater than afterID to
