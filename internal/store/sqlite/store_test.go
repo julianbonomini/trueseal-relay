@@ -145,8 +145,9 @@ func TestPeek_ReturnsWithoutDeleting(t *testing.T) {
 	}
 }
 
-// DeleteByIDs deletes specific blobs and leaves others intact.
-func TestDeleteByIDs_DeletesSpecificBlobs(t *testing.T) {
+// DeleteForRecipient deletes specific blobs from that recipient's inbox and
+// leaves others intact.
+func TestDeleteForRecipient_DeletesSpecificBlobs(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
@@ -157,29 +158,56 @@ func TestDeleteByIDs_DeletesSpecificBlobs(t *testing.T) {
 	blobs, _ := s.Peek(ctx, keyA)
 	// delete only the first two
 	ids := []int64{blobs[0].ID, blobs[1].ID}
-	if err := s.DeleteByIDs(ctx, ids); err != nil {
-		t.Fatalf("DeleteByIDs: %v", err)
+	if err := s.DeleteForRecipient(ctx, keyA, ids); err != nil {
+		t.Fatalf("DeleteForRecipient: %v", err)
 	}
 
 	remaining, err := s.Peek(ctx, keyA)
 	if err != nil {
-		t.Fatalf("Peek after DeleteByIDs: %v", err)
+		t.Fatalf("Peek after DeleteForRecipient: %v", err)
 	}
 	if len(remaining) != 1 || string(remaining[0].Envelope) != "three" {
 		t.Errorf("want [three], got %v", remaining)
 	}
 }
 
-// DeleteByIDs with non-existent IDs is a no-op.
-func TestDeleteByIDs_NonExistentIDs(t *testing.T) {
+// DeleteForRecipient with non-existent IDs is a no-op.
+func TestDeleteForRecipient_NonExistentIDs(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.DeleteByIDs(context.Background(), []int64{9999, 8888}); err != nil {
+	if err := s.DeleteForRecipient(context.Background(), keyA, []int64{9999, 8888}); err != nil {
 		t.Errorf("want no error for non-existent IDs, got %v", err)
 	}
 }
 
-// Peek then DeleteByIDs: acked blobs deleted, un-acked blobs remain.
-func TestPeek_ThenDeleteByIDs_LeavesRemainder(t *testing.T) {
+// RELAY-1 regression (issue #38): deleting under the WRONG recipient key must
+// be a silent no-op — the blob stays in its real owner's inbox.
+func TestDeleteForRecipient_ForeignIDsAreNoOp(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	s.Put(ctx, keyA, []byte("for-A"), time.Hour) //nolint:errcheck
+
+	blobs, err := s.Peek(ctx, keyA)
+	if err != nil || len(blobs) != 1 {
+		t.Fatalf("Peek: %v, %d blobs", err, len(blobs))
+	}
+
+	// Key B tries to delete A's blob by ID.
+	if err := s.DeleteForRecipient(ctx, keyB, []int64{blobs[0].ID}); err != nil {
+		t.Fatalf("DeleteForRecipient: %v", err)
+	}
+
+	remaining, err := s.Peek(ctx, keyA)
+	if err != nil {
+		t.Fatalf("Peek after foreign delete: %v", err)
+	}
+	if len(remaining) != 1 || string(remaining[0].Envelope) != "for-A" {
+		t.Errorf("want A's blob intact after foreign delete, got %v", remaining)
+	}
+}
+
+// Peek then DeleteForRecipient: acked blobs deleted, un-acked blobs remain.
+func TestPeek_ThenDeleteForRecipient_LeavesRemainder(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
@@ -188,8 +216,8 @@ func TestPeek_ThenDeleteByIDs_LeavesRemainder(t *testing.T) {
 
 	blobs, _ := s.Peek(ctx, keyA)
 	// ack only the first
-	if err := s.DeleteByIDs(ctx, []int64{blobs[0].ID}); err != nil {
-		t.Fatalf("DeleteByIDs: %v", err)
+	if err := s.DeleteForRecipient(ctx, keyA, []int64{blobs[0].ID}); err != nil {
+		t.Fatalf("DeleteForRecipient: %v", err)
 	}
 
 	// second Peek shows only the un-acked blob

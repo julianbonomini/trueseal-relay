@@ -101,22 +101,25 @@ func (s *Store) Peek(ctx context.Context, recipientKey []byte) ([]store.InboxBlo
 	return blobs, nil
 }
 
-// DeleteByIDs deletes blobs by their store-assigned IDs.
-// IDs that no longer exist are silently ignored.
-func (s *Store) DeleteByIDs(ctx context.Context, ids []int64) error {
+// DeleteForRecipient deletes blobs by their store-assigned IDs, but only from
+// the inbox owned by recipientKey. IDs that are missing or belong to another
+// inbox are silently ignored. See store.InboxStore.
+func (s *Store) DeleteForRecipient(ctx context.Context, recipientKey []byte, ids []int64) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	// Build parameterised query: DELETE FROM inbox WHERE id IN (?, ?, ...)
+	// Build parameterised query:
+	// DELETE FROM inbox WHERE recipient = ? AND id IN (?, ?, ...)
 	placeholders := make([]string, len(ids))
-	args := make([]any, len(ids))
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, recipientKey)
 	for i, id := range ids {
 		placeholders[i] = "?"
-		args[i] = id
+		args = append(args, id)
 	}
-	query := `DELETE FROM inbox WHERE id IN (` + strings.Join(placeholders, ",") + `)`
+	query := `DELETE FROM inbox WHERE recipient = ? AND id IN (` + strings.Join(placeholders, ",") + `)`
 	if _, err := s.db.ExecContext(ctx, query, args...); err != nil {
-		return fmt.Errorf("sqlite: delete by ids: %w", err)
+		return fmt.Errorf("sqlite: delete for recipient: %w", err)
 	}
 	return nil
 }

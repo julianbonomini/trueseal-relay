@@ -63,10 +63,12 @@ func (r *Router) OnPush(ctx context.Context, body []byte) error {
 }
 
 // OnDeliverAck implements session.Handler.
-// Deletes the blob identified by blobID from the InboxStore. See ADR-0009.
+// Deletes the blob identified by blobID from the acking Device's own Inbox
+// only — an ack naming an ID that is missing or belongs to another Device's
+// Inbox is a silent no-op (RELAY-1; sync ADR-0026). See ADR-0009.
 func (r *Router) OnDeliverAck(ctx context.Context, deviceKey RecipientKey, blobID int64) error {
-	log.Printf("ack:  device=%x  blob_id=%d  (deleted)", deviceKey[:4], blobID)
-	return r.store.DeleteByIDs(ctx, []int64{blobID})
+	log.Printf("ack:  device=%x  blob_id=%d", deviceKey[:4], blobID)
+	return r.store.DeleteForRecipient(ctx, deviceKey[:], []int64{blobID})
 }
 
 // OnReceiveConnect implements session.Handler.

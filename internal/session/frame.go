@@ -24,7 +24,8 @@ const (
 	// MsgTypeDeliverAck body: [blob_id: 8 bytes u64 BE].
 	// Sent by the Device after durably persisting a Deliver frame.
 	// The blob_id echoes the opaque identifier from the corresponding Deliver frame.
-	// The relay uses it to call DeleteByIDs on the InboxStore. See ADR-0009.
+	// The relay uses it to call DeleteForRecipient on the InboxStore, scoped to
+	// the acking Device's Inbox. See ADR-0009.
 	MsgTypeDeliverAck MsgType = 0x06
 )
 

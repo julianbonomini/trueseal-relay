@@ -144,10 +144,10 @@ func TestPut_RejectsWrongKeyLength(t *testing.T) {
 	}
 }
 
-// ── DeleteByIDs ───────────────────────────────────────────────────────────────
+// ── DeleteForRecipient ───────────────────────────────────────────────────────
 
-// DeleteByIDs removes only the specified blobs.
-func TestDeleteByIDs_RemovesSpecified(t *testing.T) {
+// DeleteForRecipient removes only the specified blobs from that recipient's inbox.
+func TestDeleteForRecipient_RemovesSpecified(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
@@ -156,8 +156,8 @@ func TestDeleteByIDs_RemovesSpecified(t *testing.T) {
 	s.Put(ctx, keyA, []byte("three"), time.Hour) //nolint:errcheck
 
 	blobs, _ := s.Peek(ctx, keyA)
-	if err := s.DeleteByIDs(ctx, []int64{blobs[0].ID, blobs[1].ID}); err != nil {
-		t.Fatalf("DeleteByIDs: %v", err)
+	if err := s.DeleteForRecipient(ctx, keyA, []int64{blobs[0].ID, blobs[1].ID}); err != nil {
+		t.Fatalf("DeleteForRecipient: %v", err)
 	}
 
 	remaining, _ := s.Peek(ctx, keyA)
@@ -166,18 +166,41 @@ func TestDeleteByIDs_RemovesSpecified(t *testing.T) {
 	}
 }
 
-// DeleteByIDs with non-existent IDs is a no-op.
-func TestDeleteByIDs_NonExistentIDs(t *testing.T) {
+// DeleteForRecipient with non-existent IDs is a no-op.
+func TestDeleteForRecipient_NonExistentIDs(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.DeleteByIDs(context.Background(), []int64{9999999, 8888888}); err != nil {
+	if err := s.DeleteForRecipient(context.Background(), keyA, []int64{9999999, 8888888}); err != nil {
 		t.Errorf("want no error for non-existent IDs, got %v", err)
 	}
 }
 
-// DeleteByIDs with empty slice is a no-op.
-func TestDeleteByIDs_Empty(t *testing.T) {
+// RELAY-1 regression (issue #38): deleting under the WRONG recipient key must
+// be a silent no-op — the blob stays in its real owner's inbox.
+func TestDeleteForRecipient_ForeignIDsAreNoOp(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.DeleteByIDs(context.Background(), nil); err != nil {
+	ctx := context.Background()
+
+	s.Put(ctx, keyA, []byte("for-A"), time.Hour) //nolint:errcheck
+
+	blobs, err := s.Peek(ctx, keyA)
+	if err != nil || len(blobs) != 1 {
+		t.Fatalf("Peek: %v, %d blobs", err, len(blobs))
+	}
+
+	if err := s.DeleteForRecipient(ctx, keyB, []int64{blobs[0].ID}); err != nil {
+		t.Fatalf("DeleteForRecipient: %v", err)
+	}
+
+	remaining, _ := s.Peek(ctx, keyA)
+	if len(remaining) != 1 || string(remaining[0].Envelope) != "for-A" {
+		t.Errorf("want A's blob intact after foreign delete, got %v", remaining)
+	}
+}
+
+// DeleteForRecipient with empty slice is a no-op.
+func TestDeleteForRecipient_Empty(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.DeleteForRecipient(context.Background(), keyA, nil); err != nil {
 		t.Errorf("want no error for nil IDs, got %v", err)
 	}
 }
