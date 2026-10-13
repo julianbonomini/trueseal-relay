@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"time"
 
 	"github.com/flynn/noise"
 	"github.com/julianbonomini/trueseal-relay/internal/relay"
@@ -14,8 +15,35 @@ import (
 // The relay authenticates itself; the sender remains anonymous (ADR-0002).
 // For each Push frame: calls handler.OnPush, then sends Ack (ADR-0008).
 // Session is closed by the client after all blobs are sent.
+// No deadlines are applied; production wiring uses AcceptPushWithDeadlines.
 func AcceptPush(conn net.Conn, relayKey noise.DHKey, handler Handler) error {
+	return AcceptPushWithDeadlines(conn, relayKey, handler, Deadlines{})
+}
+
+// AcceptPushWithDeadlines is AcceptPush with the ADR-0012 deadlines
+// (RELAY-6): the version-prefix read and Noise handshake must complete
+// within d.Handshake, and the whole session ends d.PushSession after accept.
+// A deadline expiry is an ordinary close (nil error), not a session error —
+// an idle connector is not a diagnostic event.
+func AcceptPushWithDeadlines(conn net.Conn, relayKey noise.DHKey, handler Handler, d Deadlines) error {
+	err := acceptPushSession(conn, relayKey, handler, d)
+	if isTimeoutErr(err) {
+		// A deadline close is policy (ADR-0012), not a failure: an idle
+		// connector must not surface as a per-connection error log.
+		return nil
+	}
+	return err
+}
+
+func acceptPushSession(conn net.Conn, relayKey noise.DHKey, handler Handler, d Deadlines) error {
 	defer conn.Close()
+	start := time.Now()
+	if d.Handshake > 0 {
+		// One absolute deadline covers the prefix read and both handshake
+		// flights; the prefix read can no longer hang on its own (RELAY-6
+		// follow-up to RELAY-5).
+		_ = conn.SetDeadline(start.Add(d.Handshake))
+	}
 
 	// ADR-0022: the Transport Version prefix precedes the handshake and is
 	// bound into it as the Noise prologue.
@@ -55,17 +83,27 @@ func AcceptPush(conn net.Conn, relayKey noise.DHKey, handler Handler) error {
 		return formatErr("push: send resp", err)
 	}
 
+	// Handshake done: bound the rest of the session's lifetime (ADR-0012:
+	// 30 s in total, from accept — not from handshake completion).
+	if d.PushSession > 0 {
+		_ = conn.SetDeadline(start.Add(d.PushSession))
+	} else if d.Handshake > 0 {
+		_ = conn.SetDeadline(time.Time{})
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	for {
 		raw, err := readNoiseMsg(conn)
 		if err != nil {
-			if err == io.EOF || isClosedErr(err) {
+			if err == io.EOF || isClosedErr(err) || isTimeoutErr(err) {
+				// Client close, or the session deadline expired — both are
+				// ordinary ends of a Push Session, not errors.
 				return nil
 			}
 			return formatErr("push: read frame", err)
-		}
+	}
 
 		plain, err := cs1.Decrypt(nil, nil, raw)
 		if err != nil {
@@ -113,6 +151,10 @@ func pushRefusalReason(err error) ErrorReason {
 		return ReasonMalformed
 	case errors.Is(err, relay.ErrRecipientMismatch):
 		return ReasonMalformed
+	case errors.Is(err, relay.ErrInboxFull):
+		return ReasonInboxFull
+	case errors.Is(err, relay.ErrRateLimited):
+		return ReasonRateLimited
 	default:
 		return ReasonInternal
 	}

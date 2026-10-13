@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -37,10 +38,24 @@ func isClosedErr(err error) bool {
 	if err == nil {
 		return false
 	}
+	// net.ErrClosed: the conn was closed locally (the session's own defer,
+	// or the writer tearing a stalled session down — RELAY-6).
+	// io.ErrClosedPipe: the same event on a net.Pipe (tests).
+	if errors.Is(err, net.ErrClosed) || errors.Is(err, io.ErrClosedPipe) {
+		return true
+	}
 	s := err.Error()
 	return strings.Contains(s, "use of closed network connection") ||
 		strings.Contains(s, "broken pipe") ||
 		strings.Contains(s, "connection reset")
+}
+
+// isTimeoutErr reports whether err is a network deadline expiry (RELAY-6).
+// A deadline close is policy (ADR-0012), not a failure: the session treats
+// it as an ordinary end, so no error is logged for an idle client.
+func isTimeoutErr(err error) bool {
+	var nerr net.Error
+	return errors.As(err, &nerr) && nerr.Timeout()
 }
 
 func formatErr(op string, err error) error {
