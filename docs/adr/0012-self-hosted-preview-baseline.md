@@ -64,8 +64,8 @@ A push cut off before its Ack is retried by the sender. That is ordinary at-leas
 
 ## Keypair setup
 
-- On first start, the entrypoint generates `/data/keypair.hex` (mode 0600) and prints the public key. The doubled-binary-path bug that made `-genkey` a no-op under Docker is fixed.
-- `trueseal-relay pubkey` prints the hex public key that clients configure, for example through `docker compose exec relay trueseal-relay pubkey`.
+- On first start, the relay binary generates the keypair file (mode 0600, create-exclusive — an existing key is never overwritten) and logs the public key. The doubled-binary-path bug that made `-genkey` a no-op under Docker is fixed: keypair operations are subcommands now, and a stray positional argument on the serve path fails loudly instead of silently dropping flags.
+- `trueseal-relay pubkey` prints the hex public key that clients configure, for example through `docker compose exec relay /trueseal-relay pubkey`. `trueseal-relay address --host <host>` prints the Relay Address of trueseal-sync ADR-0028 (ports always explicit).
 - `TRUESEAL_RELAY_KEYPAIR_HEX` remains for Operators who bring their own key.
 - The preview does not support rotating the relay key. The docs state that changing the key breaks every client configuration. A combined relay address string is left to the SDK API shape decision.
 

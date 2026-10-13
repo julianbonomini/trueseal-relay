@@ -99,11 +99,22 @@ Caddy fetches a Let's Encrypt TLS certificate automatically on first boot.
 
 ### Keypair
 
-Auto-generated on first run, stored in the `relay-data` Docker volume. To bring your own:
+Auto-generated on first start (mode 0600, never overwritten), stored in the `relay-data` Docker volume. Print what clients configure:
 
 ```sh
-# Generate and print hex
-docker compose run --rm relay /trueseal-relay -genkey
+# Public key
+docker compose exec relay /trueseal-relay pubkey
+
+# Relay Address
+docker compose exec relay /trueseal-relay address --host yourdomain.com
+```
+
+To bring your own:
+
+```sh
+# Generate and print hex (create-exclusive — never overwrites an existing file).
+# The entrypoint execs the binary, so 'genkey' is the binary's first argument.
+docker compose run --rm relay genkey -keyout /data/keypair.hex
 
 # Set in .env
 TRUESEAL_RELAY_KEYPAIR_HEX=your_hex_key_here
@@ -192,21 +203,32 @@ Full annotated example: [`config/relay.toml`](config/relay.toml).
 
 ## Keypair
 
-The relay's X25519 keypair is used in both Noise handshakes. Devices verify it before exchanging any data — distribute the public key to clients out-of-band. Generate once at deployment setup:
+The relay's X25519 keypair is used in both Noise handshakes. Devices verify it before exchanging any data — distribute the public key to clients out-of-band.
+
+On first start the relay generates the keypair itself (mode 0600, create-exclusive — an existing key is never overwritten). Print what clients configure (inside Docker the binary lives at the absolute path `/trueseal-relay`):
 
 ```sh
-# Docker (single-node)
-docker compose run --rm relay /trueseal-relay -genkey -keyout /data/keypair.hex
-
-# Docker (clustered) — generates into the shared relay-data volume
-docker compose -f docker-compose.cluster.yml run --rm relay-1 \
-  /trueseal-relay -genkey -keyout /data/keypair.hex
+# Docker
+make pubkey                                    # public key
+make address HOST=yourdomain.com               # Relay Address (sync ADR-0028)
 
 # Local binary
-./trueseal-relay -genkey -keyout keypair.hex
+./trueseal-relay pubkey
+./trueseal-relay address --host yourdomain.com
 ```
 
-The public key is printed on generation. The private key lives in the Docker volume and is never baked into the image. In a clustered deployment all Nodes share the same keypair file via a common volume.
+To bring your own key instead:
+
+```sh
+# Generate once (refuses to overwrite an existing file)
+./trueseal-relay genkey -keyout keypair.hex
+
+# Then either point the relay at the file, or set TRUESEAL_RELAY_KEYPAIR_HEX
+```
+
+The public key is printed on first start and by `pubkey`. The private key lives in the Docker volume and is never baked into the image. Changing the key breaks every client configuration (ADR-0012), so back it up once.
+
+Clustered deployments (`docker-compose.cluster.yml`, experimental per ADR-0012): the keypair auto-generates into the shared volume on first start; print it with `docker compose -f docker-compose.cluster.yml exec relay-1 /trueseal-relay pubkey`.
 
 ---
 
