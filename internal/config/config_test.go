@@ -146,11 +146,12 @@ func TestConfig_TTLAndReapIntervalEnvOverrides(t *testing.T) {
 	}
 }
 
-// Invalid duration strings for TRUESEAL_RELAY_TTL and TRUESEAL_RELAY_REAP_INTERVAL are ignored.
+// Invalid duration strings for NON-ceiling knobs are ignored with a log,
+// falling through to the defaults. (TRUESEAL_RELAY_TTL is a ceiling key —
+// RELAY-8 makes an invalid value a startup error instead; see ceiling_test.go.)
 func TestConfig_InvalidDurationEnvIgnored(t *testing.T) {
 	t.Setenv("TRUESEAL_RELAY_KEYPAIR_PATH", "/data/keypair.hex")
 	t.Setenv("TRUESEAL_RELAY_STORE_SQLITE_PATH", "/data/inbox.db")
-	t.Setenv("TRUESEAL_RELAY_TTL", "not-a-duration")
 	t.Setenv("TRUESEAL_RELAY_REAP_INTERVAL", "also-bad")
 
 	cfg, err := config.Load("/nonexistent/relay.toml")

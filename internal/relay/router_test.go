@@ -604,11 +604,15 @@ func TestRouter_OversizedEnvelopeNotStored(t *testing.T) {
 	}
 }
 
-// Zero limit (disabled) — arbitrarily large envelope is accepted.
-func TestRouter_ZeroLimitDisabled(t *testing.T) {
+// RELAY-8: a zero limit no longer disables the cap — config validation owns
+// operator intent now, and the Router defensively treats 0 (or negative) as
+// the protocol ceiling rather than "no limit".
+func TestRouter_ZeroLimitMeansProtocolCeiling(t *testing.T) {
 	r := newRouterWithLimit(t, 0)
-	env := make([]byte, 10*1024*1024) // 10 MiB
-	if err := r.OnPush(context.Background(), pushBody(make32(0xDD), env)); err != nil {
-		t.Errorf("want nil with limit=0, got %v", err)
+	if err := r.OnPush(context.Background(), pushBodySized(make32(0xDD), int(relay.ProtocolMaxEnvelopeBytes))); err != nil {
+		t.Errorf("envelope exactly at the protocol ceiling must be accepted, got %v", err)
+	}
+	if err := r.OnPush(context.Background(), pushBodySized(make32(0xEE), int(relay.ProtocolMaxEnvelopeBytes)+1)); err == nil {
+		t.Error("envelope one byte over the protocol ceiling must be refused with limit=0")
 	}
 }
