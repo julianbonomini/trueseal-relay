@@ -130,6 +130,10 @@ func AcceptReceive(conn net.Conn, relayKey noise.DHKey, handler Handler) error {
 
 		typ, body, ok := Parse(plain)
 		if !ok {
+			// Unknown frame type or malformed framing: generic Error,
+			// malformed code, no echoed bytes (ADR-0022). Non-blocking like
+			// the heartbeat echo — the read loop must never stall.
+			writer.trySend(Frame(MsgTypeError, []byte{byte(ReasonMalformed)}))
 			continue
 		}
 
@@ -142,6 +146,7 @@ func AcceptReceive(conn net.Conn, relayKey noise.DHKey, handler Handler) error {
 		case MsgTypeDeliverAck:
 			blobID, ok := DecodeDeliverAckBody(body)
 			if !ok {
+				writer.trySend(Frame(MsgTypeError, []byte{byte(ReasonMalformed)}))
 				continue
 			}
 			if err := handler.OnDeliverAck(ctx, deviceKey, int64(blobID)); err != nil {
@@ -150,7 +155,10 @@ func AcceptReceive(conn net.Conn, relayKey noise.DHKey, handler Handler) error {
 				log.Printf("recv: failed to delete acknowledged blob: %v", err)
 			}
 		default:
-			// drop silently
+			// A known frame type that does not belong on a Receive Session
+			// (Push, Deliver, Ack, Error): protocol violation — generic Error,
+			// no echoed bytes (ADR-0022).
+			writer.trySend(Frame(MsgTypeError, []byte{byte(ReasonMalformed)}))
 		}
 	}
 }

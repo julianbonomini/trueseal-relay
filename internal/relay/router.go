@@ -42,19 +42,29 @@ func NewRouter(s store.InboxStore, n notify.Notifier, ttl time.Duration, maxEnve
 	return &Router{store: s, notifier: n, ttl: ttl, maxEnvelopeBytes: maxEnvelopeBytes}
 }
 
+// Push refusal sentinels. The session layer maps them onto Error frame
+// reason codes with errors.Is (ADR-0008 amended; the ADR-0026 relay
+// contract): ErrEnvelopeTooLarge → tooLarge (permanent),
+// ErrPushBodyTooShort → malformed (permanent); anything else → internal
+// (temporary).
+var (
+	ErrPushBodyTooShort = errors.New("relay: push body too short (want ≥ 32 bytes for recipient key)")
+	ErrEnvelopeTooLarge = errors.New("relay: envelope too large")
+)
+
 // OnPush implements session.Handler.
 // body = [recipient_pub: 32 bytes][envelope: protobuf bytes] (ADR-0008).
 // Returns error if body < 32 bytes, envelope exceeds maxEnvelopeBytes, or Put fails (caller must not Ack).
 func (r *Router) OnPush(ctx context.Context, body []byte) error {
 	if len(body) < 32 {
-		return errors.New("relay: push body too short (want ≥ 32 bytes for recipient key)")
+		return ErrPushBodyTooShort
 	}
 	var key RecipientKey
 	copy(key[:], body[:32])
 	envelope := body[32:]
 
 	if r.maxEnvelopeBytes > 0 && int64(len(envelope)) > r.maxEnvelopeBytes {
-		return fmt.Errorf("relay: envelope too large: %d bytes (limit %d)", len(envelope), r.maxEnvelopeBytes)
+		return fmt.Errorf("%w: %d bytes (limit %d)", ErrEnvelopeTooLarge, len(envelope), r.maxEnvelopeBytes)
 	}
 
 	if err := r.store.Put(ctx, key[:], envelope, r.ttl); err != nil {

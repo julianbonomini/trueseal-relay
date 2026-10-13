@@ -574,12 +574,17 @@ func TestAcceptPush_ErrorFrameOnOnPushError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decrypt response: %v", err)
 	}
-	typ, _, ok := session.Parse(errDecrypted)
+	typ, body, ok := session.Parse(errDecrypted)
 	if !ok {
 		t.Fatalf("want parseable Error frame, got unparseable bytes")
 	}
 	if typ != session.MsgTypeError {
 		t.Errorf("want MsgTypeError (0x05), got type=0x%02x", typ)
+	}
+	// An unclassified handler failure is a TEMPORARY internal refusal
+	// (ADR-0026 relay contract): reason code 0x84.
+	if len(body) != 1 || body[0] != 0x84 {
+		t.Errorf("want Error body [0x84] (internal), got %x", body)
 	}
 
 	// OnPush was called (returning error means "not stored") — no Ack must follow
