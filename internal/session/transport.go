@@ -9,12 +9,13 @@ import (
 )
 
 // writeNoiseMsg writes a length-prefixed message: [len:u16 BE][body].
+// Length and body go out in a single Write so frames from different writers
+// can never interleave on the wire (RELAY-2).
 func writeNoiseMsg(conn net.Conn, msg []byte) error {
-	lenbuf := [2]byte{byte(len(msg) >> 8), byte(len(msg))}
-	if _, err := conn.Write(lenbuf[:]); err != nil {
-		return err
-	}
-	_, err := conn.Write(msg)
+	out := make([]byte, 2+len(msg))
+	binary.BigEndian.PutUint16(out, uint16(len(msg)))
+	copy(out[2:], msg)
+	_, err := conn.Write(out)
 	return err
 }
 
