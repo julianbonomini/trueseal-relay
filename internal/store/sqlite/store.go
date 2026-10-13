@@ -26,34 +26,29 @@ CREATE INDEX IF NOT EXISTS idx_inbox_expires_at ON inbox(expires_at);
 // Safe for concurrent use — all access serialised through a single connection.
 // See ADR-0003 (durable until delivery) and ADR-0007 (hexagonal architecture).
 type Store struct {
-	db *sql.DB
+	db      *sql.DB
+	version int
 }
 
-// New opens (or creates) a SQLite database at path and initialises the schema.
+// New opens (or creates) a SQLite database at path through the versioned
+// open (ADR-0013): a fresh store records Store Version 1, an older store is
+// migrated forward, a schema-matching unversioned store is adopted, and a
+// newer or unmigratable store is refused unchanged.
 // WAL mode and FULL synchronous are set to guarantee crash-safe persistence.
 func New(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		return nil, fmt.Errorf("sqlite: open %s: %w", path, err)
-	}
+	return NewWithOptions(path, Options{})
+}
 
-	// Single connection — serialises writes, avoids SQLITE_BUSY under concurrency.
-	db.SetMaxOpenConns(1)
+// NewWithOptions is New plus the operator's destructive options (ADR-0013).
+// The reset flag is honoured only on a declared Store Reset release.
+func NewWithOptions(path string, opts Options) (*Store, error) {
+	return openStore(path, opts, migrations, CurrentStoreVersion)
+}
 
-	if _, err := db.Exec(`PRAGMA journal_mode=WAL`); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("sqlite: set WAL mode: %w", err)
-	}
-	if _, err := db.Exec(`PRAGMA synchronous=FULL`); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("sqlite: set synchronous=FULL: %w", err)
-	}
-	if _, err := db.Exec(schema); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("sqlite: apply schema: %w", err)
-	}
-
-	return &Store{db: db}, nil
+// StoreVersion is the Store Version of the opened store (ADR-0013) — the
+// number the Compatibility Table lists for this release.
+func (s *Store) StoreVersion() int {
+	return s.version
 }
 
 // Close releases the database connection.

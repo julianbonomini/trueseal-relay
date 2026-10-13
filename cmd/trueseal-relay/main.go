@@ -44,6 +44,9 @@ Usage:
   trueseal-relay genkey [flags]          generate a keypair file and exit (never overwrites)
 
 Flags (run): -config <path> (default relay.toml), -no-config (env vars only)
+             -reset-store  DESTRUCTIVE: drop every inbox and start fresh —
+                           honoured only on a declared Store Reset release
+                           (ADR-0013); refused on any other release
 `
 
 func main() {
@@ -196,6 +199,9 @@ func serve(args []string) {
 	// Use this in Docker deployments where all settings are passed as environment
 	// variables and no config file is mounted into the container.
 	noConfig := flag.Bool("no-config", false, "skip config file loading; use env vars only (Docker-friendly)")
+	// -reset-store: the operator's opt-in for a declared relay Store Reset
+	// (ADR-0013). On any other release it is refused before the store opens.
+	resetStore := flag.Bool("reset-store", false, "DESTRUCTIVE: drop every inbox and start fresh (declared Store Reset releases only, ADR-0013)")
 	flag.CommandLine.Parse(args)
 
 	// A positional argument means the caller's intent was lost — the doubled
@@ -236,14 +242,29 @@ func serve(args []string) {
 	}
 	switch cfg.Store.Type {
 	case "sqlite":
-		s, err := sqlitestore.New(cfg.Store.SQLitePath)
+		// ADR-0013: versioned open. Fresh stores record Store Version 1;
+		// older stores migrate forward in one transaction; unversioned
+		// stores with today's schema are adopted; newer or unmigratable
+		// stores are refused unchanged with one clear line naming both
+		// versions (no client metadata). The reset flag is honoured only
+		// on a declared Store Reset release.
+		s, err := sqlitestore.NewWithOptions(cfg.Store.SQLitePath, sqlitestore.Options{
+			ResetRequested: *resetStore,
+			ResetDeclared:  sqlitestore.StoreResetDeclared(),
+		})
 		if err != nil {
 			log.Fatalf("sqlite store: %v", err)
 		}
 		defer s.Close()
+		if *resetStore {
+			log.Printf("store reset: dropped every inbox at the operator's -reset-store (ADR-0013); keypair untouched")
+		}
+		log.Printf("inbox store: sqlite, store version %d", s.StoreVersion())
 		inbox = s
 		notifier = inprocess.New()
 	case "postgres":
+		// Experimental (ADR-0012); store versioning is scoped to the
+		// supported SQLite backend (ADR-0013).
 		s, err := pgstore.New(ctx, cfg.Store.PostgresDSN)
 		if err != nil {
 			log.Fatalf("postgres store: %v", err)
