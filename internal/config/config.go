@@ -65,6 +65,12 @@ const (
 	// DefaultMaxReceiveSessionsPerDevice caps concurrent Receive Sessions
 	// per Device key (reconnect overlap needs headroom above 1).
 	DefaultMaxReceiveSessionsPerDevice = 4
+	// DefaultShutdownDrain bounds step 2 of the ADR-0012 graceful
+	// shutdown: pushes whose writes are in progress get at most this long
+	// to commit and send their Ack before they are cut off (ADR-0012:
+	// 10 s; Docker's default stop grace period). Operators may shorten it
+	// for e2e; raising it needs a matching stop_grace_period.
+	DefaultShutdownDrain = 10 * time.Second
 )
 
 // Config is the operator-facing configuration for trueseal-relay.
@@ -76,12 +82,12 @@ type Config struct {
 
 // RelayConfig holds relay-level settings.
 type RelayConfig struct {
-	KeypairPath      string        `toml:"keypair_path"`
-	ListenPush       string        `toml:"listen_push"`
-	ListenReceive    string        `toml:"listen_receive"`
-	ListenHealth     string        `toml:"listen_health"`
-	TTL              time.Duration `toml:"ttl"`
-	ReapInterval     time.Duration `toml:"reap_interval"`
+	KeypairPath   string        `toml:"keypair_path"`
+	ListenPush    string        `toml:"listen_push"`
+	ListenReceive string        `toml:"listen_receive"`
+	ListenHealth  string        `toml:"listen_health"`
+	TTL           time.Duration `toml:"ttl"`
+	ReapInterval  time.Duration `toml:"reap_interval"`
 	// MaxEnvelopeBytes is the maximum size of the protobuf Envelope bytes
 	// (body[32:] of the Push frame body). Blobs exceeding this limit are rejected
 	// without Ack. See ADR-0008.
@@ -95,10 +101,15 @@ type RelayConfig struct {
 	// RELAY-6 (ADR-0012): liveness deadlines and abuse limits. Every limit
 	// is keyed on the recipient Inbox, the Device key or a global count —
 	// never on a peer address.
-	HandshakeDeadline           time.Duration `toml:"handshake_deadline"`
-	PushSessionDeadline         time.Duration `toml:"push_session_deadline"`
-	ReceiveIdleDeadline         time.Duration `toml:"receive_idle_deadline"`
-	WriteDeadline               time.Duration `toml:"write_deadline"`
+	HandshakeDeadline   time.Duration `toml:"handshake_deadline"`
+	PushSessionDeadline time.Duration `toml:"push_session_deadline"`
+	ReceiveIdleDeadline time.Duration `toml:"receive_idle_deadline"`
+	WriteDeadline       time.Duration `toml:"write_deadline"`
+	// ShutdownDrain is the RELAY-11 graceful-shutdown drain (ADR-0012
+	// step 2): in-flight pushes get at most this long to commit and Ack
+	// before being cut off. Receive Sessions are cancelled after the
+	// drain regardless.
+	ShutdownDrain               time.Duration `toml:"shutdown_drain"`
 	MaxBlobsPerInbox            int64         `toml:"max_blobs_per_inbox"`
 	MaxBytesPerInbox            int64         `toml:"max_bytes_per_inbox"`
 	PushRatePerSecond           float64       `toml:"push_rate_per_second"`
@@ -136,6 +147,7 @@ type relayOverlay struct {
 	PushSessionDeadline         *time.Duration `toml:"push_session_deadline"`
 	ReceiveIdleDeadline         *time.Duration `toml:"receive_idle_deadline"`
 	WriteDeadline               *time.Duration `toml:"write_deadline"`
+	ShutdownDrain               *time.Duration `toml:"shutdown_drain"`
 	MaxBlobsPerInbox            *int64         `toml:"max_blobs_per_inbox"`
 	MaxBytesPerInbox            *int64         `toml:"max_bytes_per_inbox"`
 	PushRatePerSecond           *float64       `toml:"push_rate_per_second"`
@@ -211,6 +223,9 @@ func resolve(cfg *Config, ov *overlay) error {
 		return err
 	}
 	if r.WriteDeadline, err = pickPositiveDuration("relay.write_deadline", o.WriteDeadline, DefaultWriteDeadline); err != nil {
+		return err
+	}
+	if r.ShutdownDrain, err = pickPositiveDuration("relay.shutdown_drain", o.ShutdownDrain, DefaultShutdownDrain); err != nil {
 		return err
 	}
 	if r.MaxBlobsPerInbox, err = pickPositiveInt64("relay.max_blobs_per_inbox", o.MaxBlobsPerInbox, DefaultMaxBlobsPerInbox); err != nil {
@@ -368,6 +383,9 @@ func applyEnvOverrides(cfg *Config, ov *overlay) error {
 	}
 	if d, ok := envDuration("TRUESEAL_RELAY_WRITE_DEADLINE"); ok {
 		ov.Relay.WriteDeadline = &d
+	}
+	if d, ok := envDuration("TRUESEAL_RELAY_SHUTDOWN_DRAIN"); ok {
+		ov.Relay.ShutdownDrain = &d
 	}
 	if n, ok := envInt64("TRUESEAL_RELAY_MAX_BLOBS_PER_INBOX"); ok {
 		ov.Relay.MaxBlobsPerInbox = &n

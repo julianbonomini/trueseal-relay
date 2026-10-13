@@ -374,134 +374,20 @@ func serve(args []string) {
 		MaxReceiveSessionsPerDevice: cfg.Relay.MaxReceiveSessionsPerDevice,
 	})
 	router.SetLogger(relayLog)
-	deadlines := session.Deadlines{
-		Handshake:   cfg.Relay.HandshakeDeadline,
-		PushSession: cfg.Relay.PushSessionDeadline,
-		ReceiveIdle: cfg.Relay.ReceiveIdleDeadline,
-		Write:       cfg.Relay.WriteDeadline,
-	}
 	reaper := store.NewReaper(inbox, cfg.Relay.ReapInterval)
 	reaper.SetLogger(relayLog)
 
-	// Start TTL reaper
-	go reaper.Run(ctx)
-
-	var wg sync.WaitGroup
-
-	// Push listener — NK sessions
-	pushLn, err := net.Listen("tcp", cfg.Relay.ListenPush)
-	if err != nil {
-		log.Fatalf("push listen %s: %v", cfg.Relay.ListenPush, err)
+	// RELAY-11: the listener, accept and drain lifecycle lives in a
+	// testable server type; main only wires dependencies and waits for the
+	// signal.
+	srv := newServer(cfg.Relay, kp.DHKey, inbox, router, reaper, relayLog)
+	if err := srv.start(); err != nil {
+		log.Fatalf("listen: %v", err)
 	}
-	log.Printf("push listener on %s", cfg.Relay.ListenPush)
-
-	// Receive listener — XX sessions
-	receiveLn, err := net.Listen("tcp", cfg.Relay.ListenReceive)
-	if err != nil {
-		log.Fatalf("receive listen %s: %v", cfg.Relay.ListenReceive, err)
-	}
-	log.Printf("receive listener on %s", cfg.Relay.ListenReceive)
-
-	go func() {
-		<-ctx.Done()
-		pushLn.Close()
-		receiveLn.Close()
-	}()
-
-	max := cfg.Relay.MaxConnections
-	pushSem := make(chan struct{}, max)
-	recvSem := make(chan struct{}, max)
-	sessionErrs := newSessionErrorLog(time.Now)
-
-	go func() {
-		for {
-			conn, err := pushLn.Accept()
-			if err != nil {
-				return
-			}
-			select {
-			case pushSem <- struct{}{}:
-			default:
-				// ADR-0012: no refusal is logged in normal mode — counted
-				// always, surfaced in dev mode (RELAY-9).
-				n := refusalCounters.push.Add(1)
-				relayLog.Debugf("push: connection limit reached — connection refused (total %d)", n)
-				conn.Close()
-				continue
-			}
-			wg.Add(1)
-			go func(c net.Conn) {
-				defer wg.Done()
-				defer func() { <-pushSem }()
-				if err := session.AcceptPushWithDeadlines(c, kp.DHKey, router, deadlines); err != nil {
-					// Rate-limited and field-free: one scanner must not fill
-					// the log, and the error can wrap a peer address. The
-					// one-word class is derived without formatting it.
-					sessionErrs.logf("push", err)
-				}
-			}(conn)
-		}
-	}()
-
-	go func() {
-		for {
-			conn, err := receiveLn.Accept()
-			if err != nil {
-				return
-			}
-			select {
-			case recvSem <- struct{}{}:
-			default:
-				n := refusalCounters.recv.Add(1)
-				relayLog.Debugf("recv: connection limit reached — connection refused (total %d)", n)
-				conn.Close()
-				continue
-			}
-			wg.Add(1)
-			go func(c net.Conn) {
-				defer wg.Done()
-				defer func() { <-recvSem }()
-				if err := session.AcceptReceiveWithDeadlines(c, kp.DHKey, router, deadlines); err != nil {
-					sessionErrs.logf("receive", err)
-				}
-			}(conn)
-		}
-	}()
-
 	log.Printf("trueseal-relay running (push=%s receive=%s health=%s)", cfg.Relay.ListenPush, cfg.Relay.ListenReceive, cfg.Relay.ListenHealth)
 
-	// Health endpoint (RELAY-10; ADR-0012 "Health and metrics"): /healthz
-	// probes the store and reports the Transport Version — 200 when the
-	// store answers, 503 when it doesn't, so an orchestrator (the Docker
-	// HEALTHCHECK) restarts a Node whose inbox.db is unusable instead of
-	// showing green while every push fails. The health listener is
-	// private to the operator, so dev_mode is not a metadata leak. The
-	// body is additive JSON with no client data and no error internals.
-	healthSrv := &http.Server{
-		Addr:         cfg.Relay.ListenHealth,
-		Handler:      healthHandler(inbox, cfg.Relay.Dev),
-		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 5 * time.Second,
-	}
-	go func() {
-		if err := healthSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("health: server error: %v", err)
-		}
-	}()
-	go func() {
-		<-ctx.Done()
-		_ = healthSrv.Shutdown(context.Background())
-	}()
 	<-ctx.Done()
-	log.Printf("shutting down — draining active sessions (30s timeout)")
-	done := make(chan struct{})
-	go func() { wg.Wait(); close(done) }()
-	select {
-	case <-done:
-		log.Printf("all sessions drained cleanly")
-	case <-time.After(30 * time.Second):
-		log.Printf("shutdown timeout — forcing exit")
-	}
+	srv.shutdown()
 }
 
 // healthProbeTimeout bounds the store probe in /healthz (RELAY-10): a wedged
