@@ -5,7 +5,7 @@ The relay core is isolated from infrastructure via two ports (Go interfaces). Ad
 **Port 1 — InboxStore**
 Pure durable storage. Responsible for: accepting blobs into an inbox, non-destructively reading blobs for delivery, deleting blobs by ID after DeliverAck, and reaping blobs whose TTL has elapsed.
 
-Blobs are deleted only after the recipient Device sends a DeliverAck — not on read. This is ack-gated deletion (ADR-0009). `Peek` is non-destructive; `DeleteByIDs` is called by the router after each DeliverAck.
+Blobs are deleted only after the recipient Device sends a DeliverAck — not on read. This is ack-gated deletion (ADR-0009). `Peek` is non-destructive; the delete port is called by the router after each DeliverAck.
 
 ```go
 type InboxStore interface {
@@ -15,6 +15,8 @@ type InboxStore interface {
     Reap(ctx context.Context) error
 }
 ```
+
+*Errata (2026-10-13):* the delete port is now `DeleteForRecipient(ctx, recipientKey, ids)` — deletes are scoped to the acking Device's Inbox, so a DeliverAck can never delete a Blob from another Inbox (RELAY-1, #38). The port also gained `PeekAfter(ctx, recipientKey, afterID)` for deliver-once-per-session (RELAY-7, #44), `PutWithLimits` for per-Inbox quotas (RELAY-6, #43) and `Ping` for the health probe (RELAY-10, #30). The interface sketch above shows the original shape; `internal/store/inbox_store.go` is the source of truth.
 
 Note: an earlier version of this interface used `Flush` (atomic fetch+delete). That was superseded by ADR-0009, which introduced ack-gated deletion. `Flush` no longer exists in the port.
 
