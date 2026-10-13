@@ -2,8 +2,9 @@ package store
 
 import (
 	"context"
-	"log"
 	"time"
+
+	"github.com/julianbonomini/trueseal-relay/internal/logging"
 )
 
 // Reaper periodically calls InboxStore.Reap to delete envelopes whose TTL
@@ -15,11 +16,21 @@ import (
 type Reaper struct {
 	store    InboxStore
 	interval time.Duration
+	logger   *logging.Logger
 }
 
 // NewReaper returns a Reaper that calls store.Reap every interval.
 func NewReaper(s InboxStore, interval time.Duration) *Reaper {
-	return &Reaper{store: s, interval: interval}
+	return &Reaper{store: s, interval: interval, logger: logging.Nop()}
+}
+
+// SetLogger routes the Reaper's logging (RELAY-9). nil restores the
+// default no-op logger.
+func (r *Reaper) SetLogger(l *logging.Logger) {
+	if l == nil {
+		l = logging.Nop()
+	}
+	r.logger = l
 }
 
 // Run starts the reap loop. Blocks until ctx is cancelled.
@@ -33,7 +44,10 @@ func (r *Reaper) Run(ctx context.Context) {
 			return
 		case <-ticker.C:
 			if err := r.store.Reap(ctx); err != nil {
-				log.Printf("reaper: Reap error: %v", err)
+				// A store error never wraps a peer address (ADR-0012).
+				r.logger.Printf("reaper: Reap error: %v", err)
+			} else {
+				r.logger.Debugf("reaper: sweep complete")
 			}
 		}
 	}

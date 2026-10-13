@@ -3,7 +3,11 @@ package main
 import (
 	"bytes"
 	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -67,10 +71,18 @@ func TestSessionErrorLog_RateLimited(t *testing.T) {
 	clock := func() time.Time { return now }
 	el := newSessionErrorLog(clock)
 
-	el.logf("push") // first line: emitted
-	el.logf("push") // inside the window: suppressed
-	el.logf("push") // inside the window: suppressed
-	el.logf("recv") // a different kind has its own window: emitted
+	// Errors that WRAP a peer address (net.OpError) — the classification
+	// must inspect without ever formatting them (RELAY-9).
+	resetErr := fmt.Errorf("receive: read frame: %w", &net.OpError{
+		Op: "read", Net: "tcp", Addr: &net.TCPAddr{IP: net.ParseIP("203.0.113.7"), Port: 51234},
+		Err: syscall.ECONNRESET,
+	})
+	internalErr := errors.New("receive: register device: relay: subscribe device inbox: boom")
+
+	el.logf("push", resetErr)    // first line: emitted
+	el.logf("push", resetErr)    // inside the window: suppressed
+	el.logf("push", resetErr)    // inside the window: suppressed
+	el.logf("recv", internalErr) // a different kind has its own window: emitted
 
 	lines := strings.Count(lb.String(), "\n")
 	if lines != 2 {
@@ -79,17 +91,55 @@ func TestSessionErrorLog_RateLimited(t *testing.T) {
 
 	// After the window, the next error reports the suppressed count.
 	now = now.Add(2 * sessionErrorLogInterval)
-	el.logf("push")
+	el.logf("push", resetErr)
 	out := lb.String()
 	if !strings.Contains(out, "3 since last report") {
 		t.Errorf("suppressed count missing from the post-window line: %q", out)
 	}
-	for _, banned := range []string{"203.0.113.7", "addr="} {
+	// RELAY-9: the one-word class recovers signal without fields.
+	if !strings.Contains(out, "push session error (reset") {
+		t.Errorf("classified reset missing: %q", out)
+	}
+	if !strings.Contains(out, "recv session error (internal)") {
+		t.Errorf("classified internal missing: %q", out)
+	}
+	for _, banned := range []string{"203.0.113.7", "51234", "addr="} {
 		if strings.Contains(out, banned) {
 			t.Errorf("session error log contains client metadata %q: %q", banned, out)
 		}
 	}
 }
+
+// TestClassifySessionErr pins the field-free classes (RELAY-9): the class
+// word is all a normal-mode line ever carries.
+func TestClassifySessionErr(t *testing.T) {
+	timeoutErr := &net.OpError{Op: "read", Net: "tcp", Err: &timeoutError{}}
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"timeout", fmt.Errorf("receive: read frame: %w", timeoutErr), "timeout"},
+		{"reset", fmt.Errorf("push: read frame: %w", syscall.ECONNRESET), "reset"},
+		{"broken pipe", fmt.Errorf("push: send ack: %w", syscall.EPIPE), "reset"},
+		{"eof", fmt.Errorf("push: read e: %w", io.ErrUnexpectedEOF), "closed"},
+		{"closed conn", fmt.Errorf("receive: read frame: %w", net.ErrClosed), "closed"},
+		{"nil", nil, "internal"},
+		{"other", errors.New("boom"), "internal"},
+	}
+	for _, tc := range cases {
+		if got := classifySessionErr(tc.err); got != tc.want {
+			t.Errorf("%s: classifySessionErr = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// timeoutError is a net.Error with Timeout() true.
+type timeoutError struct{}
+
+func (e *timeoutError) Error() string   { return "i/o timeout" }
+func (e *timeoutError) Timeout() bool   { return true }
+func (e *timeoutError) Temporary() bool { return true }
 
 // buildBinary compiles the real relay binary once per test run, so the tests
 // below exercise the exact artifact the Dockerfile and entrypoint run.

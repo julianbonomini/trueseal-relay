@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"time"
 
+	"github.com/julianbonomini/trueseal-relay/internal/logging"
 	"github.com/julianbonomini/trueseal-relay/internal/notify"
 	"github.com/julianbonomini/trueseal-relay/internal/store"
 )
@@ -38,6 +40,26 @@ type Router struct {
 	inboxLimits store.InboxLimits
 	rateLimiter *rateLimiter
 	sessionCap  *sessionCap
+
+	// RELAY-9 (ADR-0012 "Logging"): the single logging seam. Lifecycle and
+	// field-free errors in every mode; per-message detail (key prefixes,
+	// sizes, Blob IDs) in dev mode only. Never an address, never payload
+	// bytes, in any mode.
+	logger *logging.Logger
+
+	// refusals counts silent refusals per class (RELAY-6 made refusals
+	// log-free in normal mode; RELAY-9's dev mode surfaces them, with the
+	// running total attached).
+	refusals refusalCounters
+}
+
+// refusalCounters are the Router's per-class silent-refusal totals.
+type refusalCounters struct {
+	tooLarge    atomic.Int64
+	malformed   atomic.Int64
+	rateLimited atomic.Int64
+	inboxFull   atomic.Int64
+	sessionCap  atomic.Int64
 }
 
 // Limits carries the ADR-0012 abuse limits a Router enforces (RELAY-6).
@@ -86,7 +108,17 @@ func NewRouterWithLimits(s store.InboxStore, n notify.Notifier, ttl time.Duratio
 		},
 		rateLimiter: newRateLimiter(limits.PushRatePerSecond, limits.PushRateBurst, nil),
 		sessionCap:  newSessionCap(limits.MaxReceiveSessionsPerDevice),
+		logger:      logging.Nop(),
 	}
+}
+
+// SetLogger routes the Router's logging (RELAY-9). nil restores the
+// default no-op logger. Called once from main before listeners start.
+func (r *Router) SetLogger(l *logging.Logger) {
+	if l == nil {
+		l = logging.Nop()
+	}
+	r.logger = l
 }
 
 // Push refusal sentinels. The session layer maps them onto Error frame
@@ -112,6 +144,8 @@ var (
 // Returns error if body < 32 bytes, envelope exceeds maxEnvelopeBytes, or Put fails (caller must not Ack).
 func (r *Router) OnPush(ctx context.Context, body []byte) error {
 	if len(body) < 32 {
+		n := r.refusals.malformed.Add(1)
+		r.logger.Debugf("push refused: malformed (body too short; total %d)", n)
 		return ErrPushBodyTooShort
 	}
 	var key RecipientKey
@@ -119,6 +153,8 @@ func (r *Router) OnPush(ctx context.Context, body []byte) error {
 	envelope := body[32:]
 
 	if int64(len(envelope)) > r.maxEnvelopeBytes {
+		n := r.refusals.tooLarge.Add(1)
+		r.logger.Debugf("push refused: too large recipient=%x envelope=%d bytes (limit %d; total %d)", key[:4], len(envelope), r.maxEnvelopeBytes, n)
 		return fmt.Errorf("%w: %d bytes (limit %d)", ErrEnvelopeTooLarge, len(envelope), r.maxEnvelopeBytes)
 	}
 
@@ -129,9 +165,13 @@ func (r *Router) OnPush(ctx context.Context, body []byte) error {
 	// and nothing is stored. The payload is never inspected.
 	recipient, err := extractEnvelopeRecipient(envelope)
 	if err != nil {
+		n := r.refusals.malformed.Add(1)
+		r.logger.Debugf("push refused: malformed recipient field recipient=%x (total %d)", key[:4], n)
 		return fmt.Errorf("%w: %v", ErrPushRecipientMalformed, err)
 	}
 	if recipient != key {
+		n := r.refusals.malformed.Add(1)
+		r.logger.Debugf("push refused: routing prefix != envelope recipient recipient=%x (total %d)", key[:4], n)
 		return ErrRecipientMismatch
 	}
 
@@ -139,6 +179,8 @@ func (r *Router) OnPush(ctx context.Context, body []byte) error {
 	// a flood must not reach the store at all. Refusal is temporary
 	// (rateLimited): the bucket refills.
 	if !r.rateLimiter.allow(key) {
+		n := r.refusals.rateLimited.Add(1)
+		r.logger.Debugf("push refused: rate limited recipient=%x (total %d)", key[:4], n)
 		return ErrRateLimited
 	}
 
@@ -147,11 +189,14 @@ func (r *Router) OnPush(ctx context.Context, body []byte) error {
 	// translated to the relay's refusal sentinel for the session layer.
 	if err := r.store.PutWithLimits(ctx, key[:], envelope, r.ttl, r.inboxLimits); err != nil {
 		if errors.Is(err, store.ErrInboxFull) {
+			n := r.refusals.inboxFull.Add(1)
+			r.logger.Debugf("push refused: inbox full recipient=%x (total %d)", key[:4], n)
 			return fmt.Errorf("%w: %v", ErrInboxFull, err)
 		}
 		return err
 	}
 	_ = r.notifier.Notify(key[:]) // best-effort; delivery goroutine handles the flush
+	r.logger.Debugf("push: recipient=%x envelope=%d bytes", key[:4], len(envelope))
 	return nil
 }
 
@@ -160,6 +205,7 @@ func (r *Router) OnPush(ctx context.Context, body []byte) error {
 // only — an ack naming an ID that is missing or belongs to another Device's
 // Inbox is a silent no-op (RELAY-1; sync ADR-0026). See ADR-0009.
 func (r *Router) OnDeliverAck(ctx context.Context, deviceKey RecipientKey, blobID int64) error {
+	r.logger.Debugf("ack: device=%x blob_id=%d", deviceKey[:4], blobID)
 	return r.store.DeleteForRecipient(ctx, deviceKey[:], []int64{blobID})
 }
 
@@ -196,8 +242,11 @@ func (r *Router) OnReceiveConnect(ctx context.Context, deviceKey RecipientKey) (
 	// connection so the client reconnects (RELAY-7).
 	if !r.sessionCap.acquire(deviceKey) {
 		close(deliverCh)
+		n := r.refusals.sessionCap.Add(1)
+		r.logger.Debugf("recv: session refused, per-device cap reached key=%x (total %d)", deviceKey[:4], n)
 		return nil, ErrTooManyReceiveSessions
 	}
+	r.logger.Debugf("recv: device connected key=%x", deviceKey[:4])
 
 	subCh, err := r.notifier.Subscribe(ctx, deviceKey[:])
 	if err != nil {
@@ -210,6 +259,7 @@ func (r *Router) OnReceiveConnect(ctx context.Context, deviceKey RecipientKey) (
 		defer func() {
 			r.sessionCap.release(deviceKey)
 			close(deliverCh) // close LAST: signals full teardown (slot released)
+			r.logger.Debugf("recv: device disconnected key=%x", deviceKey[:4])
 		}()
 
 		// lastID tracks the last Blob delivered to THIS session. The initial

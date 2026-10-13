@@ -104,6 +104,14 @@ type RelayConfig struct {
 	PushRatePerSecond           float64       `toml:"push_rate_per_second"`
 	PushRateBurst               int           `toml:"push_rate_burst"`
 	MaxReceiveSessionsPerDevice int           `toml:"max_receive_sessions_per_device"`
+
+	// Dev selects dev logging mode (RELAY-9, ADR-0012 "Logging"). Per the
+	// ADR it is set by the -dev flag or TRUESEAL_RELAY_DEV only — never
+	// TOML — so verbose logging is always an explicit, per-invocation
+	// choice an operator cannot forget in a config file. Dev mode may log
+	// key prefixes, sizes and Blob IDs; it never logs payload bytes or
+	// peer addresses, in any mode.
+	Dev bool `toml:"-"`
 }
 
 // StoreConfig holds storage adapter settings.
@@ -375,6 +383,14 @@ func applyEnvOverrides(cfg *Config, ov *overlay) error {
 	}
 	if n, ok := envInt("TRUESEAL_RELAY_MAX_RECEIVE_SESSIONS_PER_DEVICE"); ok {
 		ov.Relay.MaxReceiveSessionsPerDevice = &n
+	}
+	// RELAY-9 (ADR-0012): dev logging mode. Only a recognisable truthy
+	// value enables it — anything else (unset, "0", "false", a typo) is
+	// normal mode, so verbose logging can never be enabled by accident.
+	if v := strings.TrimSpace(os.Getenv("TRUESEAL_RELAY_DEV")); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil && b {
+			cfg.Relay.Dev = true
+		}
 	}
 	return nil
 }

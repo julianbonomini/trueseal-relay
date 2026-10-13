@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -17,6 +19,7 @@ import (
 
 	"github.com/julianbonomini/trueseal-relay/internal/config"
 	"github.com/julianbonomini/trueseal-relay/internal/keypair"
+	"github.com/julianbonomini/trueseal-relay/internal/logging"
 	"github.com/julianbonomini/trueseal-relay/internal/notify"
 	"github.com/julianbonomini/trueseal-relay/internal/notify/inprocess"
 	"github.com/julianbonomini/trueseal-relay/internal/relay"
@@ -52,11 +55,14 @@ func newSessionErrorLog(now func() time.Time) *sessionErrorLog {
 
 const sessionErrorLogInterval = time.Minute
 
-// logf emits "kind session error" at most once per interval per kind.
-// Later lines in a window report how many were suppressed since the last
-// emitted line. Field-free: the underlying error is never printed — it can
-// wrap net.OpError, whose string contains the peer address (ADR-0012).
-func (l *sessionErrorLog) logf(kind string) {
+// logf emits "kind session error (class)" at most once per interval per
+// kind. Later lines in a window report how many were suppressed since the
+// last emitted line. Field-free: the underlying error is never printed —
+// it can wrap net.OpError, whose string contains the peer address
+// (ADR-0012). RELAY-9: the one-word CLASS recovers operator signal without
+// fields — timeout / reset / closed / internal — derived by errors.As/Is
+// inspection, never by formatting the error.
+func (l *sessionErrorLog) logf(kind string, err error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
@@ -68,11 +74,30 @@ func (l *sessionErrorLog) logf(kind string) {
 	n := l.suppressed[kind]
 	l.suppressed[kind] = 0
 	l.last[kind] = now
+	class := classifySessionErr(err)
 	if n > 1 {
-		log.Printf("%s session error (%d since last report)", kind, n)
+		log.Printf("%s session error (%s, %d since last report)", kind, class, n)
 	} else {
-		log.Printf("%s session error", kind)
+		log.Printf("%s session error (%s)", kind, class)
 	}
+}
+
+// classifySessionErr reduces a session error to one field-free word
+// (RELAY-9; the C3 review's classified-error follow-up). It INSPECTS the
+// error chain but never formats it: net.OpError's string carries the peer
+// address, which must never reach a log line in any mode.
+func classifySessionErr(err error) string {
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		return "timeout"
+	}
+	if errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) {
+		return "reset"
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) {
+		return "closed"
+	}
+	return "internal"
 }
 
 // usage lists the subcommands. RELAY-12: keypair operations are subcommands,
@@ -245,6 +270,10 @@ func serve(args []string) {
 	// -reset-store: the operator's opt-in for a declared relay Store Reset
 	// (ADR-0013). On any other release it is refused before the store opens.
 	resetStore := flag.Bool("reset-store", false, "DESTRUCTIVE: drop every inbox and start fresh (declared Store Reset releases only, ADR-0013)")
+	// -dev: dev logging mode (RELAY-9, ADR-0012). Verbose per-message
+	// detail — key prefixes, sizes, Blob IDs, session events — but NEVER
+	// payload bytes or peer addresses, in any mode.
+	devFlag := flag.Bool("dev", false, "dev logging mode: verbose per-message logs (never IP addresses); also TRUESEAL_RELAY_DEV=1")
 	flag.CommandLine.Parse(args)
 
 	// A positional argument means the caller's intent was lost — the doubled
@@ -261,6 +290,20 @@ func serve(args []string) {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		log.Fatalf("config: %v", err)
+	}
+	if *devFlag {
+		cfg.Relay.Dev = true
+	}
+
+	// RELAY-9 (ADR-0012 "Logging"): one logging seam for the session,
+	// relay and store packages. Normal mode: lifecycle + field-free errors
+	// only. Dev mode adds per-message detail — and still never logs a
+	// peer address or payload bytes, in any mode.
+	relayLog := logging.New(os.Stderr, cfg.Relay.Dev)
+	session.SetLogger(relayLog)
+	if cfg.Relay.Dev {
+		log.Printf("*** DEV MODE ENABLED — verbose logging (key prefixes, sizes, blob IDs, session events) ***")
+		log.Printf("*** dev mode never logs IP addresses or payload bytes; do not run it against real users ***")
 	}
 
 	// RELAY-12: first start generates the keypair (mode 0600) instead of
@@ -330,6 +373,7 @@ func serve(args []string) {
 		PushRateBurst:               float64(cfg.Relay.PushRateBurst),
 		MaxReceiveSessionsPerDevice: cfg.Relay.MaxReceiveSessionsPerDevice,
 	})
+	router.SetLogger(relayLog)
 	deadlines := session.Deadlines{
 		Handshake:   cfg.Relay.HandshakeDeadline,
 		PushSession: cfg.Relay.PushSessionDeadline,
@@ -337,6 +381,7 @@ func serve(args []string) {
 		Write:       cfg.Relay.WriteDeadline,
 	}
 	reaper := store.NewReaper(inbox, cfg.Relay.ReapInterval)
+	reaper.SetLogger(relayLog)
 
 	// Start TTL reaper
 	go reaper.Run(ctx)
@@ -377,9 +422,10 @@ func serve(args []string) {
 			select {
 			case pushSem <- struct{}{}:
 			default:
-				// ADR-0012: no refusal is logged in normal mode — counted for
-				// dev mode / future metrics, nothing more.
-				refusalCounters.push.Add(1)
+				// ADR-0012: no refusal is logged in normal mode — counted
+				// always, surfaced in dev mode (RELAY-9).
+				n := refusalCounters.push.Add(1)
+				relayLog.Debugf("push: connection limit reached — connection refused (total %d)", n)
 				conn.Close()
 				continue
 			}
@@ -389,8 +435,9 @@ func serve(args []string) {
 				defer func() { <-pushSem }()
 				if err := session.AcceptPushWithDeadlines(c, kp.DHKey, router, deadlines); err != nil {
 					// Rate-limited and field-free: one scanner must not fill
-					// the log, and the error can wrap a peer address.
-					sessionErrs.logf("push")
+					// the log, and the error can wrap a peer address. The
+					// one-word class is derived without formatting it.
+					sessionErrs.logf("push", err)
 				}
 			}(conn)
 		}
@@ -405,7 +452,8 @@ func serve(args []string) {
 			select {
 			case recvSem <- struct{}{}:
 			default:
-				refusalCounters.recv.Add(1)
+				n := refusalCounters.recv.Add(1)
+				relayLog.Debugf("recv: connection limit reached — connection refused (total %d)", n)
 				conn.Close()
 				continue
 			}
@@ -414,7 +462,7 @@ func serve(args []string) {
 				defer wg.Done()
 				defer func() { <-recvSem }()
 				if err := session.AcceptReceiveWithDeadlines(c, kp.DHKey, router, deadlines); err != nil {
-					sessionErrs.logf("receive")
+					sessionErrs.logf("receive", err)
 				}
 			}(conn)
 		}
@@ -422,13 +470,18 @@ func serve(args []string) {
 
 	log.Printf("trueseal-relay running (push=%s receive=%s health=%s)", cfg.Relay.ListenPush, cfg.Relay.ListenReceive, cfg.Relay.ListenHealth)
 
-	// Health endpoint — GET /healthz returns 200 OK while the relay is running.
-	// Useful for container health checks and load balancer probes.
+	// Health endpoint — GET /healthz returns 200 OK while the relay is
+	// running. The body is JSON so RELAY-10 can extend it (store check,
+	// Transport Version) without breaking consumers; RELAY-9 adds only
+	// the dev_mode field ADR-0012 requires. The health listener is
+	// private to the operator (container HEALTHCHECK), so dev_mode is
+	// not a metadata leak.
 	healthSrv := &http.Server{
 		Addr: cfg.Relay.ListenHealth,
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("ok"))
+			_, _ = fmt.Fprintf(w, "{\"status\":\"ok\",\"dev_mode\":%t}\n", cfg.Relay.Dev)
 		}),
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 5 * time.Second,

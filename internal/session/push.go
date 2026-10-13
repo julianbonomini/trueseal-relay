@@ -83,6 +83,11 @@ func acceptPushSession(conn net.Conn, relayKey noise.DHKey, handler Handler, d D
 		return formatErr("push: send resp", err)
 	}
 
+	// RELAY-9: dev-mode session lifecycle detail. A Push Session is
+	// anonymous (NK) — there is no sender key to log, ever.
+	logg().Debugf("push: NK handshake complete (anonymous sender)")
+	defer func() { logg().Debugf("push: session closed") }()
+
 	// Handshake done: bound the rest of the session's lifetime (ADR-0012:
 	// 30 s in total, from accept — not from handshake completion).
 	if d.PushSession > 0 {
