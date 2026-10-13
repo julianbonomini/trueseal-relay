@@ -30,6 +30,8 @@ Two compose files — pick one:
 
 Both include Dozzle (public log viewer) and Caddy (HTTPS). Caddy only starts in the `production` profile — locally services are reachable directly on `localhost`.
 
+**Health.** The image carries a Docker `HEALTHCHECK` against `/healthz` (port 7702, container-network only — never published). `/healthz` probes the inbox store: `200` with `{"status":"ok","dev_mode":false,"transport_version":1}` while the store answers, `503` when it is unreadable or stalls, so `docker ps` shows a Node with a broken `inbox.db` as unhealthy instead of green. `transport_version` is the Transport Version from the handshake prefix — the number the Compatibility Table lists.
+
 ---
 
 ### Local (no domain, no TLS)
@@ -204,7 +206,7 @@ Env vars (used in Docker) or TOML file (pass with `-config`). Env vars override 
 | `TRUESEAL_RELAY_STORE_POSTGRES_DSN` | — | **Required** when `store.type = postgres` |
 | `TRUESEAL_RELAY_LISTEN_RECEIVE` | `:7700` | |
 | `TRUESEAL_RELAY_LISTEN_PUSH` | `:7701` | |
-| `TRUESEAL_RELAY_LISTEN_HEALTH` | `:7702` | `GET /healthz → 200 ok` |
+| `TRUESEAL_RELAY_LISTEN_HEALTH` | `:7702` | `GET /healthz → 200 {"status":"ok","dev_mode":false,"transport_version":1}` while the store answers; `503 {"status":"unavailable",...}` when it doesn't (ADR-0012) |
 | `TRUESEAL_RELAY_TTL` | `720h` | undelivered blob retention; capped at 30 days — a higher value refuses startup (ADR-0034) |
 | `TRUESEAL_RELAY_REAP_INTERVAL` | `1h` | |
 | `TRUESEAL_RELAY_MAX_CONNECTIONS` | `1000` | per listener; excess connections rejected; explicit `0` = no limit |

@@ -174,3 +174,14 @@ func (s *Store) Reap(ctx context.Context) error {
 	}
 	return nil
 }
+
+// Ping proves the store answers a read right now (RELAY-10; ADR-0012): a
+// real bounded SELECT, not just a pool handle. A closed or unreadable
+// database (disk full, locked, corrupt) returns an error.
+func (s *Store) Ping(ctx context.Context) error {
+	var one int
+	if err := s.db.QueryRowContext(ctx, `SELECT 1`).Scan(&one); err != nil {
+		return fmt.Errorf("sqlite: ping: %w", err)
+	}
+	return nil
+}

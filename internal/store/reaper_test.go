@@ -108,6 +108,9 @@ func (e *errorStore) DeleteForRecipient(_ context.Context, _ []byte, _ []int64) 
 func (e *errorStore) Reap(_ context.Context) error {
 	return fmt.Errorf("reap: simulated error")
 }
+func (e *errorStore) Ping(_ context.Context) error {
+	return nil
+}
 
 // Reaper removes expired envelopes after a cycle.
 func TestReaper_ReapsExpired(t *testing.T) {

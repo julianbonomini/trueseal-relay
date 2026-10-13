@@ -367,3 +367,13 @@ func (s *Store) Truncate(ctx context.Context) error {
 func channelName(key []byte) string {
 	return "r" + hex.EncodeToString(key[:31])
 }
+
+// Ping proves the store answers right now (RELAY-10; ADR-0012). pgxpool.Ping
+// acquires a connection and round-trips the server. Experimental backend —
+// see ADR-0012/ADR-0013.
+func (s *Store) Ping(ctx context.Context) error {
+	if err := s.pool.Ping(ctx); err != nil {
+		return fmt.Errorf("postgres: ping: %w", err)
+	}
+	return nil
+}
