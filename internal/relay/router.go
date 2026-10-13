@@ -33,13 +33,54 @@ type Router struct {
 	notifier         notify.Notifier
 	ttl              time.Duration
 	maxEnvelopeBytes int64
+
+	// RELAY-6 (ADR-0012) abuse limits. nil limiter / cap disables them.
+	inboxLimits store.InboxLimits
+	rateLimiter *rateLimiter
+	sessionCap  *sessionCap
+}
+
+// Limits carries the ADR-0012 abuse limits a Router enforces (RELAY-6).
+// Every value is operator-configurable; the zero value disables its limit.
+type Limits struct {
+	// MaxBlobsPerInbox and MaxBytesPerInbox cap per-Inbox occupancy
+	// (refusal: inboxFull, temporary).
+	MaxBlobsPerInbox int64
+	MaxBytesPerInbox int64
+	// PushRatePerSecond and PushRateBurst are the per-recipient token
+	// bucket (refusal: rateLimited, temporary).
+	PushRatePerSecond float64
+	PushRateBurst     float64
+	// MaxReceiveSessionsPerDevice caps concurrent Receive Sessions per
+	// Device key (refusal: the new session is closed).
+	MaxReceiveSessionsPerDevice int
 }
 
 // NewRouter returns a Router wired to store and notifier.
 // ttl is applied to every Put — use relay.DefaultTTL for the standard 30-day window.
 // maxEnvelopeBytes caps the envelope size (body[32:] of Push body); 0 means no limit.
+// It enforces no abuse limits; production wiring uses NewRouterWithLimits.
 func NewRouter(s store.InboxStore, n notify.Notifier, ttl time.Duration, maxEnvelopeBytes int64) *Router {
-	return &Router{store: s, notifier: n, ttl: ttl, maxEnvelopeBytes: maxEnvelopeBytes}
+	return NewRouterWithLimits(s, n, ttl, maxEnvelopeBytes, Limits{})
+}
+
+// NewRouterWithLimits is NewRouter plus the ADR-0012 abuse limits
+// (RELAY-6). Every limit is keyed on the recipient Inbox, the Device key,
+// or a global count — never on a peer address, which the relay never
+// reads, stores or uses (ADR-0012; trueseal-roadmap#26).
+func NewRouterWithLimits(s store.InboxStore, n notify.Notifier, ttl time.Duration, maxEnvelopeBytes int64, limits Limits) *Router {
+	return &Router{
+		store:            s,
+		notifier:         n,
+		ttl:              ttl,
+		maxEnvelopeBytes: maxEnvelopeBytes,
+		inboxLimits: store.InboxLimits{
+			MaxBlobs: limits.MaxBlobsPerInbox,
+			MaxBytes: limits.MaxBytesPerInbox,
+		},
+		rateLimiter: newRateLimiter(limits.PushRatePerSecond, limits.PushRateBurst, nil),
+		sessionCap:  newSessionCap(limits.MaxReceiveSessionsPerDevice),
+	}
 }
 
 // Push refusal sentinels. The session layer maps them onto Error frame
@@ -88,7 +129,20 @@ func (r *Router) OnPush(ctx context.Context, body []byte) error {
 		return ErrRecipientMismatch
 	}
 
-	if err := r.store.Put(ctx, key[:], envelope, r.ttl); err != nil {
+	// RELAY-6: the per-recipient token bucket is checked BEFORE the store —
+	// a flood must not reach the store at all. Refusal is temporary
+	// (rateLimited): the bucket refills.
+	if !r.rateLimiter.allow(key) {
+		return ErrRateLimited
+	}
+
+	// RELAY-6: the quota check is atomic with the insert inside the store —
+	// concurrent pushes cannot overshoot. ErrInboxFull (temporary) is
+	// translated to the relay's refusal sentinel for the session layer.
+	if err := r.store.PutWithLimits(ctx, key[:], envelope, r.ttl, r.inboxLimits); err != nil {
+		if errors.Is(err, store.ErrInboxFull) {
+			return fmt.Errorf("%w: %v", ErrInboxFull, err)
+		}
 		return err
 	}
 	_ = r.notifier.Notify(key[:]) // best-effort; delivery goroutine handles the flush
@@ -128,14 +182,29 @@ func (r *Router) OnReceiveConnect(ctx context.Context, deviceKey RecipientKey) (
 	// the channel send (ctx.Done() provides the escape hatch).
 	deliverCh := make(chan DeliveryBlob, 256)
 
+	// RELAY-6: concurrent Receive Sessions per Device key are capped
+	// (ADR-0012). The slot is taken under one lock (no split-brain count)
+	// and released exactly once when the delivery goroutine exits — the
+	// channel close afterwards is the test-visible teardown signal. A
+	// refused session returns an error, and the session layer closes the
+	// connection so the client reconnects (RELAY-7).
+	if !r.sessionCap.acquire(deviceKey) {
+		close(deliverCh)
+		return nil, ErrTooManyReceiveSessions
+	}
+
 	subCh, err := r.notifier.Subscribe(ctx, deviceKey[:])
 	if err != nil {
+		r.sessionCap.release(deviceKey)
 		close(deliverCh)
 		return nil, fmt.Errorf("relay: subscribe device inbox: %w", err)
 	}
 
 	go func() {
-		defer close(deliverCh)
+		defer func() {
+			r.sessionCap.release(deviceKey)
+			close(deliverCh) // close LAST: signals full teardown (slot released)
+		}()
 
 		// lastID tracks the last Blob delivered to THIS session. The initial
 		// flush covers the whole Inbox (afterID 0); each notify then delivers
