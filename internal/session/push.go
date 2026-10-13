@@ -2,10 +2,12 @@ package session
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 
 	"github.com/flynn/noise"
+	"github.com/julianbonomini/trueseal-relay/internal/relay"
 )
 
 // AcceptPush handles an inbound Noise NK Push Session.
@@ -15,11 +17,19 @@ import (
 func AcceptPush(conn net.Conn, relayKey noise.DHKey, handler Handler) error {
 	defer conn.Close()
 
+	// ADR-0022: the Transport Version prefix precedes the handshake and is
+	// bound into it as the Noise prologue.
+	prologue, err := exchangeTransportVersion(conn)
+	if err != nil {
+		return err
+	}
+
 	cfg := noise.Config{
 		CipherSuite:   noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashBLAKE2s),
 		Pattern:       noise.HandshakeNK,
 		Initiator:     false,
 		StaticKeypair: relayKey,
+		Prologue:      prologue,
 	}
 	hs, err := noise.NewHandshakeState(cfg)
 	if err != nil {
@@ -64,16 +74,17 @@ func AcceptPush(conn net.Conn, relayKey noise.DHKey, handler Handler) error {
 
 		typ, body, ok := Parse(plain)
 		if !ok || typ != MsgTypePush {
-			continue // drop unknown/malformed frames silently
+			// Unknown frame type or malformed framing on a Push Session:
+			// generic Error, malformed code, no echoed bytes (ADR-0022).
+			sendPushError(conn, cs2, ReasonMalformed)
+			continue
 		}
 
 		if err := handler.OnPush(ctx, body); err != nil {
-			// Permanent rejection — send Error frame so the client does not retry.
-			// Do NOT Ack, do NOT store the blob (ADR-0008).
-			errFrame, encErr := cs2.Encrypt(nil, nil, Frame(MsgTypeError, nil))
-			if encErr == nil {
-				_ = writeNoiseMsg(conn, errFrame) // best-effort; ignore send failure
-			}
+			// Typed refusal (ADR-0008 amended; the ADR-0026 relay contract) —
+			// send the Error frame with its reason code so the client can tell
+			// "never retry" from "retry later". Do NOT Ack, do NOT store.
+			sendPushError(conn, cs2, pushRefusalReason(err))
 			continue
 		}
 
@@ -85,5 +96,29 @@ func AcceptPush(conn net.Conn, relayKey noise.DHKey, handler Handler) error {
 		if err := writeNoiseMsg(conn, ack); err != nil {
 			return formatErr("push: send ack", err)
 		}
+	}
+}
+
+// pushRefusalReason classifies an OnPush failure onto an Error frame reason
+// code (ADR-0026 relay contract). The relay's permanent refusals are the
+// sentinel errors from the routing loop; everything else is a temporary
+// internal failure — a client that retries later may succeed.
+func pushRefusalReason(err error) ErrorReason {
+	switch {
+	case errors.Is(err, relay.ErrEnvelopeTooLarge):
+		return ReasonTooLarge
+	case errors.Is(err, relay.ErrPushBodyTooShort):
+		return ReasonMalformed
+	default:
+		return ReasonInternal
+	}
+}
+
+// sendPushError best-effort sends an Error frame with the given reason code.
+// The body is exactly the code byte — never echoed frame bytes (ADR-0022).
+func sendPushError(conn net.Conn, cs *noise.CipherState, reason ErrorReason) {
+	errFrame, encErr := cs.Encrypt(nil, nil, Frame(MsgTypeError, []byte{byte(reason)}))
+	if encErr == nil {
+		_ = writeNoiseMsg(conn, errFrame) // best-effort; ignore send failure
 	}
 }

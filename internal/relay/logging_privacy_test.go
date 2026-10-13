@@ -187,11 +187,13 @@ func TestLogs_NoClientMetadata(t *testing.T) {
 // client can send (DeliverAck) as well as receive.
 func doXXHandshakeBoth(t *testing.T, conn net.Conn, deviceKey noise.DHKey) (send, recv *noise.CipherState) {
 	t.Helper()
+	prologue := clientVersionExchange(t, conn)
 	cfg := noise.Config{
 		CipherSuite:   noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashBLAKE2s),
 		Pattern:       noise.HandshakeXX,
 		Initiator:     true,
 		StaticKeypair: deviceKey,
+		Prologue:      prologue,
 	}
 	hs, err := noise.NewHandshakeState(cfg)
 	if err != nil {

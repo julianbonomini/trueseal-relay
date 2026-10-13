@@ -237,14 +237,16 @@ func TestE2E_TCPDropBeforeAck_Redelivers(t *testing.T) {
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-// doPushSession performs a full NK push: handshake + Push frame + receive Ack.
+// doPushSession performs a full NK push: version exchange + handshake + Push frame + receive Ack.
 func doPushSession(t *testing.T, conn net.Conn, relayPub []byte, recipientPub []byte, envelope []byte) {
 	t.Helper()
+	prologue := clientVersionExchange(t, conn)
 	cfg := noise.Config{
 		CipherSuite: noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashBLAKE2s),
 		Pattern:     noise.HandshakeNK,
 		Initiator:   true,
 		PeerStatic:  relayPub,
+		Prologue:    prologue,
 	}
 	hs, err := noise.NewHandshakeState(cfg)
 	if err != nil {
@@ -281,11 +283,13 @@ func doPushSession(t *testing.T, conn net.Conn, relayPub []byte, recipientPub []
 // Returns the responder→initiator CipherState for decrypting Deliver frames.
 func doXXHandshake(t *testing.T, conn net.Conn, deviceKey noise.DHKey) *noise.CipherState {
 	t.Helper()
+	prologue := clientVersionExchange(t, conn)
 	cfg := noise.Config{
 		CipherSuite:   noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashBLAKE2s),
 		Pattern:       noise.HandshakeXX,
 		Initiator:     true,
 		StaticKeypair: deviceKey,
+		Prologue:      prologue,
 	}
 	hs, err := noise.NewHandshakeState(cfg)
 	if err != nil {

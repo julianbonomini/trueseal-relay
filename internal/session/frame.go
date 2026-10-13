@@ -16,10 +16,12 @@ const (
 	// without sender identity on NK sessions; NK already authenticates the relay so
 	// a well-formed Ack is sufficient proof of persistence.
 	MsgTypeAck MsgType = 0x04
-	// MsgTypeError body: empty.
-	// Semantic: permanent rejection — the relay will not store the blob.
-	// The client must NOT retry the same blob (non-retryable).
-	// Sent when OnPush returns an error (e.g. oversized envelope). See ADR-0008.
+	// MsgTypeError body: one byte — an ErrorReason code (ADR-0008, amended by
+	// RELAY-5; the ADR-0026 relay contract). Permanent codes never succeed on
+	// retry; temporary codes may. A zero-length body remains well-formed for
+	// backward compatibility with the original empty-body layout (the sync
+	// vectors pin an empty-body Error as a valid frame) but the relay always
+	// sends a code.
 	MsgTypeError MsgType = 0x05
 	// MsgTypeDeliverAck body: [blob_id: 8 bytes u64 BE].
 	// Sent by the Device after durably persisting a Deliver frame.
@@ -28,6 +30,37 @@ const (
 	// the acking Device's Inbox. See ADR-0009.
 	MsgTypeDeliverAck MsgType = 0x06
 )
+
+// ErrorReason is the single-byte reason code in an Error frame body
+// (ADR-0008 amended; the ADR-0026 relay contract). Bit 7 set marks a
+// TEMPORARY refusal — the sender may retry later. Bit 7 clear is permanent:
+// the blob will never be accepted and must not be retried.
+type ErrorReason uint8
+
+const (
+	// ReasonTooLarge (permanent): the envelope exceeds the relay's size
+	// limit (ADR-0025: a size refusal is permanent and typed).
+	ReasonTooLarge ErrorReason = 0x01
+	// ReasonMalformed (permanent): unparseable framing, an unknown frame
+	// type, or an undeliverable body (e.g. a Push body under 32 bytes).
+	// Unknown frame types get this code with NO echoed bytes (ADR-0022).
+	ReasonMalformed ErrorReason = 0x02
+
+	// ReasonInboxFull (temporary): the recipient's Inbox quota is exhausted
+	// (RELAY-6 introduces the quota; the code is defined here so the
+	// taxonomy is stable).
+	ReasonInboxFull ErrorReason = 0x81
+	// ReasonRateLimited (temporary): the per-recipient rate limit fired
+	// (RELAY-6; code reserved here).
+	ReasonRateLimited ErrorReason = 0x82
+	// ReasonUnavailable (temporary): the Inbox store is unavailable.
+	ReasonUnavailable ErrorReason = 0x83
+	// ReasonInternal (temporary): an unclassified internal failure.
+	ReasonInternal ErrorReason = 0x84
+)
+
+// Temporary reports whether the refusal may succeed on a later retry.
+func (r ErrorReason) Temporary() bool { return byte(r)&0x80 != 0 }
 
 // Frame encodes a typed message into wire bytes.
 func Frame(t MsgType, body []byte) []byte {
