@@ -106,6 +106,14 @@ func acceptReceiveSession(conn net.Conn, relayKey noise.DHKey, handler Handler, 
 		return formatErr("receive: read s,se msg", err)
 	}
 
+	// Handshake done — disarm the handshake deadline before registration
+	// and the session loop (the idle deadline is armed per-read below).
+	// Registration runs without a conn deadline: it does store work whose
+	// budget is its own, not the handshake's.
+	if d.Handshake > 0 {
+		_ = conn.SetDeadline(time.Time{})
+	}
+
 	// Extract device's static public key
 	var deviceKey relay.RecipientKey
 	copy(deviceKey[:], hs.PeerStatic())
@@ -126,11 +134,6 @@ func acceptReceiveSession(conn net.Conn, relayKey noise.DHKey, handler Handler, 
 	deliverCh, err := handler.OnReceiveConnect(ctx, deviceKey)
 	if err != nil {
 		return formatErr("receive: register device", err)
-	}
-
-	// Handshake done: the idle deadline is applied per-read below.
-	if d.Handshake > 0 {
-		_ = conn.SetDeadline(time.Time{})
 	}
 
 	// One writer per Receive Session: the sole owner of cs2 and the conn's
