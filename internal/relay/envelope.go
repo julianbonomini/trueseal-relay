@@ -40,3 +40,12 @@ type DeliveryBlob struct {
 // a last resort for abandoned devices, not routine housekeeping.
 // Overridden by operator config. See ADR-0003.
 const DefaultTTL = 30 * 24 * time.Hour
+
+// ProtocolMaxEnvelopeBytes is the largest Envelope one Noise transport frame
+// can carry (sync ADR-0025: u16 length prefix 65,535, minus the 16-byte AEAD
+// tag, the 5-byte frame header and the 32-byte recipient key prefix). An
+// operator may only LOWER the relay's size limit below this ceiling — the
+// relay refuses to start with a higher one (RELAY-8). The client enforces
+// its own 61,440-byte Sync body limit below this value, so the ceiling is
+// never reachable by honest traffic.
+const ProtocolMaxEnvelopeBytes int64 = 65_482

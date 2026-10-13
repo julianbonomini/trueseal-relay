@@ -23,7 +23,7 @@ func TestVectors_EnvelopeCeilingMatchesDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if config.DefaultMaxEnvelopeBytes != v.Protocol.MaxEnvelopeBytes {
+	if config.DefaultMaxEnvelopeBytes != int64(v.Protocol.MaxEnvelopeBytes) {
 		t.Fatalf("DefaultMaxEnvelopeBytes = %d, vectors pin maxEnvelopeBytes %d — the two layers of ADR-0025 disagree",
 			config.DefaultMaxEnvelopeBytes, v.Protocol.MaxEnvelopeBytes)
 	}

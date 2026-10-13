@@ -7,10 +7,13 @@ import (
 )
 
 // Refusal sentinels for the ADR-0012 abuse limits (RELAY-6). The session
-// layer maps them onto temporary Error frame reason codes with errors.Is:
-// ErrInboxFull → inboxFull (0x81), ErrRateLimited → rateLimited (0x82),
-// ErrTooManyReceiveSessions → unavailable (0x83). All three are temporary:
-// space frees up, buckets refill, sessions close.
+// layer maps the two Push refusals onto temporary Error frame reason codes
+// with errors.Is: ErrInboxFull → inboxFull (0x81), ErrRateLimited →
+// rateLimited (0x82). Both are temporary: space frees up, buckets refill.
+// ErrTooManyReceiveSessions is different: the Receive Session is refused by
+// CLOSING the connection — ADR-0012's silent refusal, no Error frame. (The
+// taxonomy's 0x83 unavailable is reserved for store-internal failures and is
+// not mapped from these sentinels today.)
 var (
 	// ErrInboxFull: the recipient's Inbox quota (blobs or bytes) is
 	// exhausted. Wraps the store's refusal.
