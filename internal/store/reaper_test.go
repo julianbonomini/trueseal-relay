@@ -96,7 +96,9 @@ func (e *errorStore) Put(_ context.Context, _ []byte, _ []byte, _ time.Duration)
 func (e *errorStore) Peek(_ context.Context, _ []byte) ([]store.InboxBlob, error) {
 	return nil, nil
 }
-func (e *errorStore) DeleteByIDs(_ context.Context, _ []int64) error { return nil }
+func (e *errorStore) DeleteForRecipient(_ context.Context, _ []byte, _ []int64) error {
+	return nil
+}
 func (e *errorStore) Reap(_ context.Context) error {
 	return fmt.Errorf("reap: simulated error")
 }

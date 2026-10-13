@@ -135,23 +135,26 @@ func (s *Store) Peek(ctx context.Context, recipientKey []byte) ([]store.InboxBlo
 	return blobs, nil
 }
 
-// DeleteByIDs deletes blobs by their store-assigned IDs. See store.InboxStore.
-func (s *Store) DeleteByIDs(ctx context.Context, ids []int64) error {
+// DeleteForRecipient deletes blobs by their store-assigned IDs, but only from
+// the inbox owned by recipientKey. IDs that are missing or belong to another
+// inbox are silently ignored. See store.InboxStore.
+func (s *Store) DeleteForRecipient(ctx context.Context, recipientKey []byte, ids []int64) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	args := make([]any, len(ids))
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, recipientKey)
 	placeholders := make([]byte, 0, len(ids)*4)
 	for i, id := range ids {
 		if i > 0 {
 			placeholders = append(placeholders, ',')
 		}
-		placeholders = append(placeholders, []byte(fmt.Sprintf("$%d", i+1))...)
-		args[i] = id
+		placeholders = append(placeholders, []byte(fmt.Sprintf("$%d", i+2))...)
+		args = append(args, id)
 	}
-	query := `DELETE FROM inbox WHERE id IN (` + string(placeholders) + `)`
+	query := `DELETE FROM inbox WHERE recipient = $1 AND id IN (` + string(placeholders) + `)`
 	if _, err := s.pool.Exec(ctx, query, args...); err != nil {
-		return fmt.Errorf("postgres: delete by ids: %w", err)
+		return fmt.Errorf("postgres: delete for recipient: %w", err)
 	}
 	return nil
 }

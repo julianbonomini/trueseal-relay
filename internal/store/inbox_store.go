@@ -22,7 +22,8 @@ type InboxBlob struct {
 // See ADR-0003 (durable until delivery) and ADR-0007 (hexagonal architecture).
 type InboxStore interface {
 	// Put stores an envelope in the inbox for recipientKey.
-	// The envelope is held durably until DeleteByIDs (after DeliverAck) or TTL expiry.
+	// The envelope is held durably until DeleteForRecipient (after DeliverAck)
+	// or TTL expiry.
 	// Must persist across crashes — returning nil guarantees the blob
 	// survives a process restart.
 	// Put does not deduplicate — if the same envelope is stored twice
@@ -33,13 +34,18 @@ type InboxStore interface {
 
 	// Peek fetches all envelopes for recipientKey without deleting them.
 	// Returns InboxBlob values carrying the store-assigned ID alongside content.
-	// A subsequent call to DeleteByIDs with those IDs removes them.
+	// A subsequent call to DeleteForRecipient with the same recipientKey and
+	// those IDs removes them.
 	// Used to implement Ack-gated deletion — see ADR-0009.
 	Peek(ctx context.Context, recipientKey []byte) ([]InboxBlob, error)
 
-	// DeleteByIDs deletes blobs by their store-assigned IDs.
-	// IDs that no longer exist (already reaped or deleted) are silently ignored.
-	DeleteByIDs(ctx context.Context, ids []int64) error
+	// DeleteForRecipient deletes blobs by their store-assigned IDs, but only
+	// from the inbox owned by recipientKey. IDs that are missing, already
+	// reaped or deleted, or belong to another inbox are silently ignored —
+	// a DeliverAck can never delete a Blob from another Device's Inbox
+	// (RELAY-1; sync ADR-0026). The caller learns nothing about whether an
+	// ID exists.
+	DeleteForRecipient(ctx context.Context, recipientKey []byte, ids []int64) error
 
 	// Reap deletes all envelopes whose TTL has elapsed.
 	// Reaping is policy, not data loss — see ADR-0003.

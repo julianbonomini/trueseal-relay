@@ -27,7 +27,8 @@ type Envelope struct {
 
 // DeliveryBlob is a blob ready to be delivered to a Device over a Receive Session.
 // BlobID is the opaque store-assigned identifier sent in the Deliver frame prefix.
-// The Device echoes it back in a DeliverAck frame; the relay then calls DeleteByIDs.
+// The Device echoes it back in a DeliverAck frame; the relay then calls
+// DeleteForRecipient scoped to that Device's Inbox.
 // See ADR-0009.
 type DeliveryBlob struct {
 	BlobID   int64

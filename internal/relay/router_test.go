@@ -209,6 +209,66 @@ func TestRouter_TwoConcurrentReceiveSessions_PeekBothSeeBlob(t *testing.T) {
 	}
 }
 
+// RELAY-1 regression: a DeliverAck from Device B for a Blob ID that lives in
+// Device A's Inbox must be a silent no-op — the Blob stays in A's Inbox and is
+// still delivered to A (issue #38; sync ADR-0026).
+func TestRouter_DeliverAckFromForeignDevice_DoesNotDelete(t *testing.T) {
+	r := newRouter(t)
+	ctx := context.Background()
+
+	// Device A is online and receives its blob, learning the store-assigned ID.
+	ctxA, cancelA := context.WithCancel(ctx)
+	chA := r.OnReceiveConnect(ctxA, recipientA)
+
+	if err := r.OnPush(ctx, pushBody(make32(0xAA), []byte("for-A"))); err != nil {
+		t.Fatalf("OnPush: %v", err)
+	}
+
+	var blobID int64
+	select {
+	case blob := <-chA:
+		blobID = blob.BlobID
+	case <-time.After(time.Second):
+		t.Fatal("A did not receive its blob")
+	}
+
+	// Device B acks A's blob ID. Must not delete from A's Inbox.
+	if err := r.OnDeliverAck(ctx, recipientB, blobID); err != nil {
+		t.Fatalf("OnDeliverAck: %v", err)
+	}
+
+	// A disconnects without acking, then reconnects: the blob must be
+	// re-delivered to A (proof it survived B's foreign ack).
+	cancelA()
+	ctxA2, cancelA2 := context.WithCancel(ctx)
+	defer cancelA2()
+	chA2 := r.OnReceiveConnect(ctxA2, recipientA)
+
+	select {
+	case blob := <-chA2:
+		if string(blob.Envelope) != "for-A" {
+			t.Errorf("want 'for-A', got %q", blob.Envelope)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("blob missing from A's Inbox after a foreign DeliverAck — cross-inbox delete")
+	}
+}
+
+// RELAY-1 companion: acking a blob ID that exists in NO inbox (guessed ID)
+// is a silent no-op and returns no error — no oracle for blob existence.
+func TestRouter_DeliverAckUnknownID_NoOp(t *testing.T) {
+	r := newRouter(t)
+	ctx := context.Background()
+
+	if err := r.OnPush(ctx, pushBody(make32(0xAA), []byte("for-A"))); err != nil {
+		t.Fatalf("OnPush: %v", err)
+	}
+
+	if err := r.OnDeliverAck(ctx, recipientB, 424242); err != nil {
+		t.Fatalf("OnDeliverAck with unknown ID returned error: %v", err)
+	}
+}
+
 // Device connects, acks received blob, disconnects, then reconnects.
 // The acked blob must not be re-delivered.
 func TestRouter_ReconnectAfterAck_NoRedelivery(t *testing.T) {
