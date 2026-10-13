@@ -8,4 +8,4 @@ import (
 
 // Compile-time interface checks.
 var _ store.InboxStore = (*pgstore.Store)(nil)
-var _ notify.Notifier  = (*pgstore.Store)(nil)
+var _ notify.Notifier = (*pgstore.Store)(nil)

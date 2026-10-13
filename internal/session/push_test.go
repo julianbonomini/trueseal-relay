@@ -37,9 +37,9 @@ func (m *mockHandler) OnDeliverAck(_ context.Context, _ relay.RecipientKey, _ in
 // noiseConfig returns a standard Noise config for tests.
 func noiseCfg(staticKey noise.DHKey) noise.Config {
 	return noise.Config{
-		CipherSuite: noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashBLAKE2s),
-		Random:      nil, // use crypto/rand
-		Pattern:     noise.HandshakeXX,
+		CipherSuite:   noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashBLAKE2s),
+		Random:        nil, // use crypto/rand
+		Pattern:       noise.HandshakeXX,
 		StaticKeypair: staticKey,
 	}
 }
@@ -47,10 +47,10 @@ func noiseCfg(staticKey noise.DHKey) noise.Config {
 // dialNK opens a Noise NK session to the relay (client side of push).
 func dialNK(conn net.Conn, relayPub []byte) (*noise.HandshakeState, error) {
 	cfg := noise.Config{
-		CipherSuite:   noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashBLAKE2s),
-		Pattern:       noise.HandshakeNK,
-		Initiator:     true,
-		PeerStatic:    relayPub,
+		CipherSuite: noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashBLAKE2s),
+		Pattern:     noise.HandshakeNK,
+		Initiator:   true,
+		PeerStatic:  relayPub,
 	}
 	hs, err := noise.NewHandshakeState(cfg)
 	return hs, err

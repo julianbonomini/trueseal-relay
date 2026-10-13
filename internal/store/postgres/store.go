@@ -46,7 +46,7 @@ type Store struct {
 
 	mu       sync.RWMutex
 	subs     map[string][]chan struct{} // channelName → subscriber chans
-	refcount map[string]int            // channelName → active subscriber count
+	refcount map[string]int             // channelName → active subscriber count
 }
 
 // New opens a pool and a dedicated listener connection, applies the schema,
