@@ -70,6 +70,16 @@ type InboxStore interface {
 	// each Blob is delivered once per session — un-acked Blobs are re-sent
 	// only on a new Receive Session (RELAY-7; sync ADR-0026). afterID 0
 	// returns the whole Inbox, equivalent to Peek.
+	//
+	// Implementations must return IDs in the same monotonic order they are
+	// assigned: a Blob visible to one call must never be skipped by a later
+	// call with a smaller afterID. SQLite's rowid ordering satisfies this.
+	// The experimental Postgres backend allocates BIGSERIAL IDs out of
+	// commit order, so two concurrent same-recipient Pushes can commit an
+	// older-ID row after a newer one — that row is skipped for the rest of
+	// the session's lifetime. No Blob is lost (it is delivered on the next
+	// Receive Session), and SQLite (the supported backend, ADR-0012) is
+	// unaffected.
 	PeekAfter(ctx context.Context, recipientKey []byte, afterID int64) ([]InboxBlob, error)
 
 	// DeleteForRecipient deletes blobs by their store-assigned IDs, but only
