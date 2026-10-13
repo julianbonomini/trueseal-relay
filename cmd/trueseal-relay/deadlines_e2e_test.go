@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/binary"
 	"io"
 	"net"
@@ -90,16 +89,19 @@ func freePort(t *testing.T) string {
 }
 
 // startRelayWithEnv boots the real binary with the given extra env and
-// returns a buffer capturing its (normal-mode) log output.
-func startRelayWithEnv(t *testing.T, keyPath string, extra ...string) (*exec.Cmd, *bytes.Buffer) {
+// returns a buffer capturing its (normal-mode) log output. The buffer is
+// mutex-guarded: exec copies the child's stdout and stderr from separate
+// goroutines while the test reads (CI's -race run caught a plain
+// bytes.Buffer racing here).
+func startRelayWithEnv(t *testing.T, keyPath string, extra ...string) (*exec.Cmd, *lockedBuf) {
 	t.Helper()
 	bin := buildBinary(t)
 	cmd := exec.Command(bin, "-no-config")
 	cmd.Env = append(os.Environ(), serveEnv(t, keyPath)...)
 	cmd.Env = append(cmd.Env, extra...)
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
+	out := &lockedBuf{}
+	cmd.Stdout = out
+	cmd.Stderr = out
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start relay: %v", err)
 	}
@@ -107,7 +109,7 @@ func startRelayWithEnv(t *testing.T, keyPath string, extra ...string) (*exec.Cmd
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 		_ = cmd.Wait()
 	})
-	return cmd, &out
+	return cmd, out
 }
 
 // awaitClosed asserts the connection is closed by the peer within maxWait.
