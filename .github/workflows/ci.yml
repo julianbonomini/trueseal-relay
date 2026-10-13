@@ -42,3 +42,21 @@ jobs:
             echo "::error::-hostile-control must not exist in release builds"
             exit 1
           fi
+
+      # RELAY-15: the shipped compose is relay-only with an exact image tag;
+      # validate both compose files parse (with RELAY_IMAGE set, since the
+      # files refuse to render without it) and never reference :latest.
+      - name: Compose files are valid and carry no :latest
+        run: |
+          export RELAY_IMAGE=ghcr.io/example/trueseal-relay:v0.0.0-test
+          docker compose config -q
+          docker compose -f experimental/docker-compose.cluster.yml config -q
+          if grep -n ':latest' docker-compose.yml experimental/docker-compose.cluster.yml; then
+            echo "::error::a compose file references :latest (gate G8)"
+            exit 1
+          fi
+          if grep -rn 'tcplog' experimental/; then
+            echo "::error::HAProxy tcplog must never ship (ADR-0011)"
+            exit 1
+          fi
+          echo "OK: compose files valid, no :latest, no tcplog"

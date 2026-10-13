@@ -1,0 +1,129 @@
+name: Promote
+
+# e2e ADR-0002: promotion publishes the EXACT image the candidate built and
+# the gate tested — the same digest, tagged vX.Y.Z, with NO rebuild. The tag
+# is applied only here. Idempotent per ADR-0002 "a failed promotion is
+# retried forward": if vX.Y.Z already points at this digest, the run is a
+# no-op success; if it points at a DIFFERENT digest, that is a hard failure
+# (a published version never changes bytes — cut the next patch).
+#
+# The Release Conductor (trueseal-e2e) calls this after a green gate with
+# the digest from the Release Manifest; a maintainer can too:
+#   gh workflow run promote.yml -f version=0.2.0 -f digest=sha256:...
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Relay version to promote, e.g. 0.2.0 (no leading v)"
+        required: true
+        type: string
+      digest:
+        description: "The candidate image digest from the Release Manifest (sha256:...)"
+        required: true
+        type: string
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/trueseal-relay
+
+concurrency:
+  group: promote-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: verify the staged digest + tag it vX.Y.Z (no rebuild)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write   # imagetools create writes the tag
+    steps:
+      - name: Validate the inputs
+        run: |
+          echo "${{ inputs.version }}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            || { echo "FAIL: version must be X.Y.Z without a leading v"; exit 1; }
+          echo "${{ inputs.digest }}" | grep -qE '^sha256:[0-9a-f]{64}$' \
+            || { echo "FAIL: digest must be sha256:<64 hex>"; exit 1; }
+
+      - uses: actions/checkout@v4
+
+      - name: G9 — Apache-2.0 LICENSE present
+        run: |
+          [ -f LICENSE ] || { echo "FAIL: LICENSE missing"; exit 1; }
+          head -1 LICENSE | grep -qi "apache" \
+            || { echo "FAIL: LICENSE is not Apache-2.0"; exit 1; }
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: The staged digest must exist and be multi-arch
+        run: |
+          INSPECT=$(docker buildx imagetools inspect "${{ env.IMAGE }}@${{ inputs.digest }}" --raw)
+          echo "$INSPECT" | jq -e '.manifests // empty' > /dev/null \
+            || { echo "FAIL: digest is not a manifest list (expected multi-arch candidate)"; exit 1; }
+          for P in linux/amd64 linux/arm64; do
+            echo "$INSPECT" | jq -e --arg p "$P" \
+              '.manifests[] | select(.platform.os + "/" + .platform.architecture == $p)' > /dev/null \
+              || { echo "FAIL: candidate digest lacks platform $P"; exit 1; }
+            echo "OK: $P present"
+          done
+
+      # Only attested bytes are promotable: the gate tested this digest and
+      # the candidate workflow attested exactly it.
+      - name: Verify the build provenance attestation on the digest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh attestation verify \
+            "oci://${{ env.IMAGE }}@${{ inputs.digest }}" \
+            --repo ${{ github.repository }}
+
+      - name: Resolve any existing version tag (idempotency)
+        id: existing
+        run: |
+          if docker buildx imagetools inspect "${{ env.IMAGE }}:v${{ inputs.version }}" > /tmp/existing.txt 2>/dev/null; then
+            CURRENT=$(grep -oE 'sha256:[0-9a-f]{64}' /tmp/existing.txt | head -1)
+            echo "existing tag v${{ inputs.version }} → $CURRENT"
+            echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          else
+            echo "no existing tag v${{ inputs.version }}"
+            echo "current=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Refuse to move a published version to different bytes
+        run: |
+          CURRENT="${{ steps.existing.outputs.current }}"
+          if [ -n "$CURRENT" ] && [ "$CURRENT" != "${{ inputs.digest }}" ]; then
+            echo "FAIL: v${{ inputs.version }} already published at $CURRENT —"
+            echo "a published version never changes bytes; cut the next patch (e2e ADR-0002)"
+            exit 1
+          fi
+
+      - name: Already promoted — idempotent no-op
+        if: steps.existing.outputs.current == inputs.digest
+        run: echo "v${{ inputs.version }} already tags ${{ inputs.digest }}; nothing to do"
+
+      # imagetools create re-tags the manifest IN THE REGISTRY — no build,
+      # no pull, no new bytes.
+      - name: Tag the identical digest vX.Y.Z (no rebuild)
+        if: steps.existing.outputs.current != inputs.digest
+        run: |
+          docker buildx imagetools create \
+            -t "${{ env.IMAGE }}:v${{ inputs.version }}" \
+            "${{ env.IMAGE }}@${{ inputs.digest }}"
+          echo "tagged ${{ env.IMAGE }}:v${{ inputs.version }} → ${{ inputs.digest }}"
+
+      - name: Confirm the tag resolves to the identical digest
+        run: |
+          GOT=$(docker buildx imagetools inspect "${{ env.IMAGE }}:v${{ inputs.version }}" \
+            | grep -oE 'sha256:[0-9a-f]{64}' | head -1)
+          [ "$GOT" = "${{ inputs.digest }}" ] \
+            || { echo "FAIL: v${{ inputs.version }} resolves to $GOT, expected ${{ inputs.digest }}"; exit 1; }
+          echo "OK: v${{ inputs.version }} is exactly ${{ inputs.digest }}"
