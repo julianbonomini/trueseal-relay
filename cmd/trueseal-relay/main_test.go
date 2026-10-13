@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"log"
-	"net"
 	"strings"
 	"sync"
 	"testing"
@@ -37,14 +36,16 @@ func TestLogConnectionRefused_NoAddress(t *testing.T) {
 	log.SetOutput(&lb)
 	defer log.SetOutput(prev)
 
-	addr := &net.TCPAddr{IP: net.ParseIP("203.0.113.7"), Port: 5555}
-	logConnectionRefused("push", 1000, addr)
+	// The helper takes no peer address at all (ADR-0012: the relay never
+	// logs, stores or uses IPs). The banned strings mirror what a refusal
+	// line would contain if a RemoteAddr leaked back in.
+	logConnectionRefused("push", 1000)
 
 	out := lb.String()
 	if !strings.Contains(out, "push") || !strings.Contains(out, "1000") {
 		t.Errorf("refusal log lost its operator-useful content: %q", out)
 	}
-	for _, banned := range []string{"203.0.113.7", "5555", addr.String()} {
+	for _, banned := range []string{"203.0.113.7", "5555", "addr="} {
 		if strings.Contains(out, banned) {
 			t.Errorf("refusal log contains client address %q: %q", banned, out)
 		}

@@ -26,12 +26,17 @@ import (
 )
 
 // logConnectionRefused reports a connection-limit refusal.
-func logConnectionRefused(kind string, max int, addr net.Addr) {
-	log.Printf("%s: connection limit reached (%d) — rejecting %s", kind, max, addr)
+// ADR-0012: no client metadata — the peer address is never logged.
+func logConnectionRefused(kind string, max int) {
+	log.Printf("%s: connection limit reached (%d) — rejecting connection", kind, max)
 }
 
 func main() {
-	// Privacy: log only public keys and connection events — never envelope content.
+	// Privacy (ADR-0012): logs carry no client metadata — no IP addresses, no
+	// keys or prefixes, no sizes, no Blob IDs, no per-session events. Only
+	// lifecycle events (startup, listener addresses, the relay's own public
+	// key, shutdown) and field-free errors. Dev mode (RELAY-9) never logs
+	// addresses either.
 	cfgPath := flag.String("config", "relay.toml", "path to TOML config file")
 	// -no-config: skip TOML file loading entirely and use env vars only.
 	// Use this in Docker deployments where all settings are passed as environment
@@ -140,7 +145,7 @@ func main() {
 			select {
 			case pushSem <- struct{}{}:
 			default:
-				logConnectionRefused("push", max, conn.RemoteAddr())
+				logConnectionRefused("push", max)
 				conn.Close()
 				continue
 			}
@@ -155,10 +160,12 @@ func main() {
 				}
 				start := time.Now()
 				if err := session.AcceptPush(c, kp.DHKey, router); err != nil {
-					log.Printf("push session: %v", err)
+					// Field-free: session errors can wrap net.OpError, whose
+					// string contains the peer address (ADR-0012).
+					log.Printf("push session error")
 				}
 				if d := time.Since(start); d > 30*time.Second {
-					log.Printf("push: long-lived session closed  addr=%s  duration=%s  (no read deadline — see P2)", c.RemoteAddr(), d.Round(time.Second))
+					log.Printf("push: long-lived session closed (no read deadline — see P2)")
 				}
 			}(conn)
 		}
@@ -173,7 +180,7 @@ func main() {
 			select {
 			case recvSem <- struct{}{}:
 			default:
-				logConnectionRefused("recv", max, conn.RemoteAddr())
+				logConnectionRefused("recv", max)
 				conn.Close()
 				continue
 			}
@@ -188,10 +195,12 @@ func main() {
 				}
 				start := time.Now()
 				if err := session.AcceptReceive(c, kp.DHKey, router); err != nil {
-					log.Printf("receive session: %v", err)
+					// Field-free: session errors can wrap net.OpError, whose
+					// string contains the peer address (ADR-0012).
+					log.Printf("receive session error")
 				}
 				if d := time.Since(start); d > 24*time.Hour {
-					log.Printf("recv: very long-lived session closed  duration=%s  (no read deadline — see P2)", d.Round(time.Second))
+					log.Printf("recv: very long-lived session closed (no read deadline — see P2)")
 				}
 			}(conn)
 		}

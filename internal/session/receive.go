@@ -71,8 +71,6 @@ func AcceptReceive(conn net.Conn, relayKey noise.DHKey, handler Handler) error {
 	// Extract device's static public key
 	var deviceKey relay.RecipientKey
 	copy(deviceKey[:], hs.PeerStatic())
-	log.Printf("recv: XX handshake complete  key=%x", deviceKey[:4])
-	defer log.Printf("recv: device disconnected  key=%x", deviceKey[:4])
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -147,7 +145,9 @@ func AcceptReceive(conn net.Conn, relayKey noise.DHKey, handler Handler) error {
 				continue
 			}
 			if err := handler.OnDeliverAck(ctx, deviceKey, int64(blobID)); err != nil {
-				log.Printf("recv: OnDeliverAck failed  key=%x  blob_id=%d: %v", deviceKey[:4], blobID, err)
+				// Field-free apart from the store error (ADR-0012): the
+				// device key and Blob ID are client metadata.
+				log.Printf("recv: failed to delete acknowledged blob: %v", err)
 			}
 		default:
 			// drop silently

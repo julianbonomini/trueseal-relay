@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/julianbonomini/trueseal-relay/internal/notify"
@@ -54,7 +53,6 @@ func (r *Router) OnPush(ctx context.Context, body []byte) error {
 		return fmt.Errorf("relay: envelope too large: %d bytes (limit %d)", len(envelope), r.maxEnvelopeBytes)
 	}
 
-	log.Printf("push: recipient=%x  envelope=%d bytes", key[:4], len(envelope))
 	if err := r.store.Put(ctx, key[:], envelope, r.ttl); err != nil {
 		return err
 	}
@@ -67,7 +65,6 @@ func (r *Router) OnPush(ctx context.Context, body []byte) error {
 // only — an ack naming an ID that is missing or belongs to another Device's
 // Inbox is a silent no-op (RELAY-1; sync ADR-0026). See ADR-0009.
 func (r *Router) OnDeliverAck(ctx context.Context, deviceKey RecipientKey, blobID int64) error {
-	log.Printf("ack:  device=%x  blob_id=%d", deviceKey[:4], blobID)
 	return r.store.DeleteForRecipient(ctx, deviceKey[:], []int64{blobID})
 }
 
@@ -85,7 +82,7 @@ func (r *Router) OnDeliverAck(ctx context.Context, deviceKey RecipientKey, blobI
 // same blob — deduplication is the client's responsibility. This behaviour is
 // tested in TestRouter_TwoConcurrentReceiveSessions_NoDoubleDelivery.
 func (r *Router) OnReceiveConnect(ctx context.Context, deviceKey RecipientKey) <-chan DeliveryBlob {
-	log.Printf("recv: device connected  key=%x", deviceKey[:4])	// deliverCh buffers up to 256 blobs between the delivery goroutine and
+	// deliverCh buffers up to 256 blobs between the delivery goroutine and
 	// the session write loop. 256 is a practical upper bound for a single peek
 	// burst — large enough to absorb a full inbox drain without blocking the
 	// goroutine, small enough that backpressure kicks in before memory grows
