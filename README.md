@@ -205,10 +205,10 @@ Env vars (used in Docker) or TOML file (pass with `-config`). Env vars override 
 | `TRUESEAL_RELAY_LISTEN_RECEIVE` | `:7700` | |
 | `TRUESEAL_RELAY_LISTEN_PUSH` | `:7701` | |
 | `TRUESEAL_RELAY_LISTEN_HEALTH` | `:7702` | `GET /healthz → 200 ok` |
-| `TRUESEAL_RELAY_TTL` | `720h` | undelivered blob retention |
+| `TRUESEAL_RELAY_TTL` | `720h` | undelivered blob retention; capped at 30 days — a higher value refuses startup (ADR-0034) |
 | `TRUESEAL_RELAY_REAP_INTERVAL` | `1h` | |
-| `TRUESEAL_RELAY_MAX_CONNECTIONS` | `1000` | per listener; excess connections rejected |
-| `TRUESEAL_RELAY_MAX_ENVELOPE_BYTES` | `65482` | Noise u16 framing ceiling |
+| `TRUESEAL_RELAY_MAX_CONNECTIONS` | `1000` | per listener; excess connections rejected; explicit `0` = no limit |
+| `TRUESEAL_RELAY_MAX_ENVELOPE_BYTES` | `65482` | Noise u16 framing ceiling — a higher value refuses startup (ADR-0025) |
 | `TRUESEAL_RELAY_HANDSHAKE_DEADLINE` | `10s` | version-prefix read + Noise handshake (ADR-0012) |
 | `TRUESEAL_RELAY_PUSH_SESSION_DEADLINE` | `30s` | total Push Session lifetime, accept to close |
 | `TRUESEAL_RELAY_RECEIVE_IDLE_DEADLINE` | `75s` | Receive Session closed after this much silence; any inbound frame resets it |
@@ -220,6 +220,8 @@ Env vars (used in Docker) or TOML file (pass with `-config`). Env vars override 
 | `TRUESEAL_RELAY_MAX_RECEIVE_SESSIONS_PER_DEVICE` | `4` | concurrent Receive Sessions per Device key; excess refused |
 
 Abuse limits and deadlines follow ADR-0012: every limit is keyed on the recipient Inbox, the Device key or a global count — never on a peer address. All values accept short durations/counts so e2e can exercise them. No refusal is logged in normal mode.
+
+Every numeric knob is explicit: an unset knob takes its default, but an explicit zero or negative value refuses startup with a clear message (omit the setting to use the default). The two protocol ceilings — the 30-day TTL cap and the 65,482-byte envelope limit — may only be lowered; a higher value refuses startup (RELAY-8, sync ADR-0025/0034).
 
 Full annotated example: [`config/relay.toml`](config/relay.toml).
 

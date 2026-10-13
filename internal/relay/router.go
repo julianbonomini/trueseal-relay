@@ -58,7 +58,10 @@ type Limits struct {
 
 // NewRouter returns a Router wired to store and notifier.
 // ttl is applied to every Put — use relay.DefaultTTL for the standard 30-day window.
-// maxEnvelopeBytes caps the envelope size (body[32:] of Push body); 0 means no limit.
+// maxEnvelopeBytes caps the envelope size (body[32:] of Push body). RELAY-8:
+// there is no "0 means no limit" — operator intent is validated in config
+// before this constructor runs, and a non-positive value here defensively
+// means the protocol ceiling, never an uncapped router.
 // It enforces no abuse limits; production wiring uses NewRouterWithLimits.
 func NewRouter(s store.InboxStore, n notify.Notifier, ttl time.Duration, maxEnvelopeBytes int64) *Router {
 	return NewRouterWithLimits(s, n, ttl, maxEnvelopeBytes, Limits{})
@@ -69,6 +72,9 @@ func NewRouter(s store.InboxStore, n notify.Notifier, ttl time.Duration, maxEnve
 // or a global count — never on a peer address, which the relay never
 // reads, stores or uses (ADR-0012; trueseal-roadmap#26).
 func NewRouterWithLimits(s store.InboxStore, n notify.Notifier, ttl time.Duration, maxEnvelopeBytes int64, limits Limits) *Router {
+	if maxEnvelopeBytes <= 0 {
+		maxEnvelopeBytes = ProtocolMaxEnvelopeBytes
+	}
 	return &Router{
 		store:            s,
 		notifier:         n,
@@ -112,7 +118,7 @@ func (r *Router) OnPush(ctx context.Context, body []byte) error {
 	copy(key[:], body[:32])
 	envelope := body[32:]
 
-	if r.maxEnvelopeBytes > 0 && int64(len(envelope)) > r.maxEnvelopeBytes {
+	if int64(len(envelope)) > r.maxEnvelopeBytes {
 		return fmt.Errorf("%w: %d bytes (limit %d)", ErrEnvelopeTooLarge, len(envelope), r.maxEnvelopeBytes)
 	}
 

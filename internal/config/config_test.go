@@ -296,12 +296,14 @@ func TestConfig_LimitsEnvOverrides(t *testing.T) {
 	}
 }
 
-// RELAY-6: invalid limit env values are ignored with a log, falling through
-// to the ADR defaults — a typo must not silently disable a limit.
+// RELAY-6: UNPARSEABLE limit env values are ignored with a log, falling
+// through to the ADR defaults — a typo must not silently disable a limit.
+// (A parseable but non-positive value is different: the operator set it on
+// purpose, so RELAY-8's explicit-vs-unset rule REFUSES startup — see
+// TestConfig_NonPositiveLimitsEnvRefuses below.)
 func TestConfig_InvalidLimitsEnvIgnored(t *testing.T) {
 	t.Setenv("TRUESEAL_RELAY_KEYPAIR_PATH", "/data/keypair.hex")
 	t.Setenv("TRUESEAL_RELAY_STORE_SQLITE_PATH", "/data/inbox.db")
-	t.Setenv("TRUESEAL_RELAY_MAX_BLOBS_PER_INBOX", "-5")
 	t.Setenv("TRUESEAL_RELAY_PUSH_RATE_PER_SECOND", "fast")
 	t.Setenv("TRUESEAL_RELAY_RECEIVE_IDLE_DEADLINE", "soon")
 
@@ -309,13 +311,33 @@ func TestConfig_InvalidLimitsEnvIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Relay.MaxBlobsPerInbox != config.DefaultMaxBlobsPerInbox {
-		t.Errorf("MaxBlobsPerInbox: want default on invalid env, got %v", cfg.Relay.MaxBlobsPerInbox)
-	}
 	if cfg.Relay.PushRatePerSecond != config.DefaultPushRatePerSecond {
 		t.Errorf("PushRatePerSecond: want default on invalid env, got %v", cfg.Relay.PushRatePerSecond)
 	}
 	if cfg.Relay.ReceiveIdleDeadline != config.DefaultReceiveIdleDeadline {
 		t.Errorf("ReceiveIdleDeadline: want default on invalid env, got %v", cfg.Relay.ReceiveIdleDeadline)
+	}
+}
+
+// RELAY-8's explicit-vs-unset rule applies to env too: a parseable but
+// non-positive env value is an explicit operator mistake and refuses
+// startup — silently defaulting would hide it.
+func TestConfig_NonPositiveLimitsEnvRefuses(t *testing.T) {
+	cases := []struct{ name, value string }{
+		{"TRUESEAL_RELAY_MAX_BLOBS_PER_INBOX", "-5"},
+		{"TRUESEAL_RELAY_MAX_BLOBS_PER_INBOX", "0"},
+		{"TRUESEAL_RELAY_RECEIVE_IDLE_DEADLINE", "0s"},
+		{"TRUESEAL_RELAY_PUSH_RATE_PER_SECOND", "0"},
+		{"TRUESEAL_RELAY_MAX_RECEIVE_SESSIONS_PER_DEVICE", "0"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name+"="+tc.value, func(t *testing.T) {
+			t.Setenv("TRUESEAL_RELAY_KEYPAIR_PATH", "/data/keypair.hex")
+			t.Setenv("TRUESEAL_RELAY_STORE_SQLITE_PATH", "/data/inbox.db")
+			t.Setenv(tc.name, tc.value)
+			if _, err := config.Load("/nonexistent/relay.toml"); err == nil {
+				t.Errorf("%s=%s must refuse startup", tc.name, tc.value)
+			}
+		})
 	}
 }
