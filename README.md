@@ -1,6 +1,6 @@
 # trueseal-relay
 
-Encrypted blob relay for [trueseal-sync](https://github.com/julianbonomini/trueseal-sync). Accepts ciphertext from senders, holds it for offline recipients, delivers on reconnect. Routes by recipient public key only — content, sender identity, and group membership are structurally unknowable.
+Encrypted blob relay for [trueseal-sync](https://github.com/julianbonomini/trueseal-sync). Accepts ciphertext from senders, holds it for offline recipients, delivers on reconnect. Routes by recipient public key only — it never decrypts content and never learns who sent a blob. Group membership is not hidden by design: push fan-out lets the relay infer which devices likely share a group (sync ADR-0024).
 
 Implements [trueseal-protocol](https://github.com/julianbonomini/trueseal-protocol) on the server side.
 
@@ -303,7 +303,7 @@ Tests are skipped automatically when `TEST_POSTGRES_DSN` is not set.
 
 ## Design
 
-- **Blind** — content, sender identity, group membership are structurally unknowable, not policy-withheld
+- **Blind** — the relay can't read content and can't identify senders; it can infer likely co-membership from fan-out timing, and says so (sync ADR-0024)
 - **Durable until delivered** — accepted blobs survive crashes; Ack sent only after persistence (ADR-0009)
 - **Replaceable** — no specific Node is load-bearing; swap or scale without changing the security model (ADR-0010)
 

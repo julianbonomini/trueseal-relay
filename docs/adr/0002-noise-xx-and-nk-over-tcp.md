@@ -4,7 +4,7 @@ Two session types exist, each using a different Noise handshake pattern over raw
 
 **Receive Sessions use Noise XX** — mutual authentication. The Device and the relay verify each other's static public keys. The relay learns the Device's stable identity (its static public key) and registers it as online for immediate delivery. Forward secrecy is provided by the handshake.
 
-**Push Sessions use Noise NK** — one-sided authentication. The Device verifies the relay's static public key (confirming it is talking to the correct relay), but the relay never learns the sender's identity. A fresh ephemeral X25519 keypair is generated for each Push Session and discarded immediately after. The relay sees an unlinkable anonymous peer. This is what makes sender identity structurally unknowable — not policy-withheld.
+**Push Sessions use Noise NK** — one-sided authentication. The Device verifies the relay's static public key (confirming it is talking to the correct relay), but the relay never learns the sender's identity. A fresh ephemeral X25519 keypair is generated for each Push Session and discarded immediately after. The relay sees an unlinkable anonymous peer — sender identity is hidden by the handshake construction, not withheld by policy. (Note: this anonymity covers the sender of one Push Session only; push fan-out still lets the relay infer likely co-membership across sessions — sync ADR-0024.)
 
 The alternative for Push Sessions was reusing Noise XX with the Device's stable keypair. Rejected because it would expose sender identity to the relay on every push, breaking the blind principle. Noise NK is the correct pattern when one party must remain anonymous.
 
