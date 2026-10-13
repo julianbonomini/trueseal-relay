@@ -62,6 +62,8 @@ On SIGTERM:
 
 A push cut off before its Ack is retried by the sender. That is ordinary at-least-once behaviour.
 
+The step-2 budget is operator-configurable (`shutdown_drain` / `TRUESEAL_RELAY_SHUTDOWN_DRAIN`, default 10 s); the shipped compose file sets `stop_grace_period: 15s` above it so Docker's SIGKILL never interrupts a commit the drain would have finished. Session contexts derive from shutdown-scoped parents (RELAY-11): cancellation closes the connection, unblocking the pending read — before this, sessions derived from `context.Background()` and SIGTERM never reached them.
+
 ## Keypair setup
 
 - On first start, the relay binary generates the keypair file (mode 0600, create-exclusive — an existing key is never overwritten) and logs the public key. The doubled-binary-path bug that made `-genkey` a no-op under Docker is fixed: keypair operations are subcommands now, and a stray positional argument on the serve path fails loudly instead of silently dropping flags.

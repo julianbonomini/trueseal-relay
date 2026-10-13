@@ -3,6 +3,9 @@ services:
     build: .   # used locally; VPS pulls pre-built image from GHCR via CI
     image: ${RELAY_IMAGE:-ghcr.io/julianbonomini/trueseal-relay:latest}
     restart: unless-stopped
+    # Above the 10 s graceful-shutdown drain (ADR-0012; TRUESEAL_RELAY_SHUTDOWN_DRAIN),
+    # so SIGKILL never interrupts an in-flight commit the drain would have finished.
+    stop_grace_period: 15s
     ports:
       - "7700:7700"   # Receive sessions (Noise XX) — devices
       - "7701:7701"   # Push sessions (Noise NK) — trueseal-sync

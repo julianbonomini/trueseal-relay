@@ -215,6 +215,7 @@ Env vars (used in Docker) or TOML file (pass with `-config`). Env vars override 
 | `TRUESEAL_RELAY_PUSH_SESSION_DEADLINE` | `30s` | total Push Session lifetime, accept to close |
 | `TRUESEAL_RELAY_RECEIVE_IDLE_DEADLINE` | `75s` | Receive Session closed after this much silence; any inbound frame resets it |
 | `TRUESEAL_RELAY_WRITE_DEADLINE` | `30s` | one outbound write; a stalled client is dropped |
+| `TRUESEAL_RELAY_SHUTDOWN_DRAIN` | `10s` | graceful shutdown: in-flight pushes get at most this long to commit and Ack before being cut off (ADR-0012); raise `stop_grace_period` with it |
 | `TRUESEAL_RELAY_MAX_BLOBS_PER_INBOX` | `10000` | per-Inbox blob quota; refusal `inboxFull` (temporary) |
 | `TRUESEAL_RELAY_MAX_BYTES_PER_INBOX` | `268435456` | per-Inbox byte quota (256 MiB); refusal `inboxFull` (temporary) |
 | `TRUESEAL_RELAY_PUSH_RATE_PER_SECOND` | `20` | per-recipient sustained push rate (token bucket) |

@@ -26,7 +26,16 @@ func AcceptPush(conn net.Conn, relayKey noise.DHKey, handler Handler) error {
 // A deadline expiry is an ordinary close (nil error), not a session error —
 // an idle connector is not a diagnostic event.
 func AcceptPushWithDeadlines(conn net.Conn, relayKey noise.DHKey, handler Handler, d Deadlines) error {
-	err := acceptPushSession(conn, relayKey, handler, d)
+	return AcceptPushWithContext(context.Background(), conn, relayKey, handler, d)
+}
+
+// AcceptPushWithContext is AcceptPushWithDeadlines with a parent context
+// (RELAY-11): the graceful-shutdown drain lets in-flight pushes finish
+// first (ADR-0012 step 2) and cancels the rest — cancellation closes the
+// connection, which unblocks any pending read, and the cut-off push
+// simply never Acks, so the sender retries (at-least-once).
+func AcceptPushWithContext(ctx context.Context, conn net.Conn, relayKey noise.DHKey, handler Handler, d Deadlines) error {
+	err := acceptPushSession(ctx, conn, relayKey, handler, d)
 	if isTimeoutErr(err) {
 		// A deadline close is policy (ADR-0012), not a failure: an idle
 		// connector must not surface as a per-connection error log.
@@ -35,8 +44,17 @@ func AcceptPushWithDeadlines(conn net.Conn, relayKey noise.DHKey, handler Handle
 	return err
 }
 
-func acceptPushSession(conn net.Conn, relayKey noise.DHKey, handler Handler, d Deadlines) error {
+func acceptPushSession(parent context.Context, conn net.Conn, relayKey noise.DHKey, handler Handler, d Deadlines) error {
 	defer conn.Close()
+
+	// RELAY-11: derive the session context from the caller's parent and
+	// close the conn on cancellation (see acceptReceiveSession).
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+	go func() {
+		<-ctx.Done()
+		conn.Close()
+	}()
 	start := time.Now()
 	if d.Handshake > 0 {
 		// One absolute deadline covers the prefix read and both handshake
@@ -95,9 +113,6 @@ func acceptPushSession(conn net.Conn, relayKey noise.DHKey, handler Handler, d D
 	} else if d.Handshake > 0 {
 		_ = conn.SetDeadline(time.Time{})
 	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	for {
 		raw, err := readNoiseMsg(conn)
