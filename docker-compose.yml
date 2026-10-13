@@ -6,7 +6,8 @@ services:
     ports:
       - "7700:7700"   # Receive sessions (Noise XX) — devices
       - "7701:7701"   # Push sessions (Noise NK) — trueseal-sync
-      - "7702:7702"   # Health endpoint — local testing only (Caddy proxies this in prod)
+      # Health (7702) is NOT published: the Dockerfile HEALTHCHECK reaches
+      # it inside the container network (RELAY-10; ADR-0012).
     volumes:
       - relay-data:/data
     environment:

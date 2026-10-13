@@ -84,4 +84,10 @@ type InboxStore interface {
 	// Reaping is policy, not data loss — see ADR-0003.
 	// Called periodically by the TTL reaper goroutine.
 	Reap(ctx context.Context) error
+
+	// Ping is a cheap liveness read for the health check (RELAY-10;
+	// ADR-0012 "Health and metrics"): it must prove the store can answer a
+	// read right now, and nothing more. Callers bound it with their own
+	// context timeout. Ping never reports client metadata.
+	Ping(ctx context.Context) error
 }

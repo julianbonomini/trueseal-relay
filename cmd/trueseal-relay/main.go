@@ -470,19 +470,16 @@ func serve(args []string) {
 
 	log.Printf("trueseal-relay running (push=%s receive=%s health=%s)", cfg.Relay.ListenPush, cfg.Relay.ListenReceive, cfg.Relay.ListenHealth)
 
-	// Health endpoint — GET /healthz returns 200 OK while the relay is
-	// running. The body is JSON so RELAY-10 can extend it (store check,
-	// Transport Version) without breaking consumers; RELAY-9 adds only
-	// the dev_mode field ADR-0012 requires. The health listener is
-	// private to the operator (container HEALTHCHECK), so dev_mode is
-	// not a metadata leak.
+	// Health endpoint (RELAY-10; ADR-0012 "Health and metrics"): /healthz
+	// probes the store and reports the Transport Version — 200 when the
+	// store answers, 503 when it doesn't, so an orchestrator (the Docker
+	// HEALTHCHECK) restarts a Node whose inbox.db is unusable instead of
+	// showing green while every push fails. The health listener is
+	// private to the operator, so dev_mode is not a metadata leak. The
+	// body is additive JSON with no client data and no error internals.
 	healthSrv := &http.Server{
-		Addr: cfg.Relay.ListenHealth,
-		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = fmt.Fprintf(w, "{\"status\":\"ok\",\"dev_mode\":%t}\n", cfg.Relay.Dev)
-		}),
+		Addr:         cfg.Relay.ListenHealth,
+		Handler:      healthHandler(inbox, cfg.Relay.Dev),
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 5 * time.Second,
 	}
@@ -505,4 +502,31 @@ func serve(args []string) {
 	case <-time.After(30 * time.Second):
 		log.Printf("shutdown timeout — forcing exit")
 	}
+}
+
+// healthProbeTimeout bounds the store probe in /healthz (RELAY-10): a wedged
+// store must fail the health check fast, not hang the probe until the HTTP
+// server timeout. Well under the Docker HEALTHCHECK interval.
+const healthProbeTimeout = 2 * time.Second
+
+// healthHandler answers GET /healthz (ADR-0012 "Health and metrics"). It
+// runs one cheap store read, bounded by healthProbeTimeout: 200 when the
+// store answers, 503 when it errors or stalls. The body is the same small
+// additive JSON in both outcomes — status, dev_mode and the Transport
+// Version from the same constant the handshake prefix uses (RELAY-5;
+// sync ADR-0022). It carries no client data and no error internals: the
+// probe result is a binary healthy/unavailable, nothing more.
+func healthHandler(inbox store.InboxStore, devMode bool) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		probeCtx, cancel := context.WithTimeout(r.Context(), healthProbeTimeout)
+		defer cancel()
+		status, code := "ok", http.StatusOK
+		if err := inbox.Ping(probeCtx); err != nil {
+			status, code = "unavailable", http.StatusServiceUnavailable
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(code)
+		_, _ = fmt.Fprintf(w, "{\"status\":%q,\"dev_mode\":%t,\"transport_version\":%d}\n",
+			status, devMode, session.TransportVersion)
+	})
 }

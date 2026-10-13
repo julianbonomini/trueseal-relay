@@ -30,5 +30,12 @@ EXPOSE 7701
 # Receive sessions (Noise XX): device long-lived connections
 EXPOSE 7700
 
+# ADR-0012 "Health and metrics": the health listener stays private to the
+# container network — Docker's own HEALTHCHECK uses it (RELAY-10). A Node
+# whose store stops answering goes unhealthy and gets restarted instead of
+# showing green while every push fails. busybox wget exits non-zero on 503.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget -q -O /dev/null http://127.0.0.1:7702/healthz || exit 1
+
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["-config", "/etc/trueseal-relay/relay.toml"]
