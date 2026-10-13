@@ -257,8 +257,8 @@ func (r *Router) OnReceiveConnect(ctx context.Context, deviceKey RecipientKey) (
 	// the session write loop. 256 is a practical upper bound for a single peek
 	// burst — large enough to absorb a full inbox drain without blocking the
 	// goroutine, small enough that backpressure kicks in before memory grows
-	// unbounded. If the session write loop falls behind, peekTo will block on
-	// the channel send (ctx.Done() provides the escape hatch).
+	// unbounded. If the session write loop falls behind, deliverNew will
+	// block on the channel send (ctx.Done() provides the escape hatch).
 	deliverCh := make(chan DeliveryBlob, 256)
 
 	// RELAY-6: concurrent Receive Sessions per Device key are capped

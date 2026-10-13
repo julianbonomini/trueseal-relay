@@ -57,4 +57,9 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD wget -q -O /dev/null http://127.0.0.1:7702/healthz || exit 1
 
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["-config", "/etc/trueseal-relay/relay.toml"]
+# No -config flag: the image ships no config file, and a -config pointing at
+# a missing path silently falls back to defaults (the pre-RELAY-16 shape
+# hid that). Under Docker the documented configuration path is env vars —
+# see .env.example and docker-compose.yml. Operators who want a file mount
+# one and pass -config themselves.
+CMD []

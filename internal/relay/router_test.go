@@ -56,7 +56,6 @@ func pushBody(recipient [32]byte, payload []byte) []byte {
 	return body
 }
 
-
 // pushBodySized builds a Push body whose proto Envelope is EXACTLY
 // envelopeSize bytes — for the size-limit boundary tests, which measure
 // the envelope check, not the payload.

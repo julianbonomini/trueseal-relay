@@ -1,0 +1,81 @@
+# trueseal-relay — annotated example configuration.
+#
+# Every value below is the DEFAULT: this file documents the knobs, it does
+# not change behavior. Omit a setting to take the default. An explicit
+# zero or negative value on a numeric knob REFUSES startup — an operator
+# who sets a knob means it, and silently defaulting would hide that
+# (RELAY-8/RELAY-6; a test in internal/config loads this file and pins the
+# values against the defaults, so it cannot drift).
+#
+# Every knob also has an environment override: TRUESEAL_RELAY_<NAME> in
+# SCREAMING_SNAKE_CASE (e.g. relay.ttl → TRUESEAL_RELAY_TTL,
+# store.sqlite_path → TRUESEAL_RELAY_STORE_SQLITE_PATH). Env overrides the
+# file. Under docker compose the env path is the documented one — see
+# .env.example and docker-compose.yml.
+#
+# Dev mode (verbose logging) is intentionally NOT configurable here: it is
+# a per-invocation choice, -dev or TRUESEAL_RELAY_DEV=1 only (RELAY-9).
+
+[relay]
+# The relay keypair (64 hex chars: 32-byte X25519 private key). Generated
+# on first start at mode 0600, create-exclusive — an existing key is never
+# overwritten (RELAY-12). Back this file up: changing it breaks every
+# client configuration.
+keypair_path = "/var/lib/trueseal-relay/keypair.hex"
+
+# Listen addresses. Push sessions are anonymous Noise NK; Receive sessions
+# are authenticated Noise XX.
+listen_push    = ":7701"
+listen_receive = ":7700"
+listen_health  = ":7702"
+
+# TTL of an undelivered Envelope. The protocol cap is 30 days (720h) — an
+# operator may only LOWER it; a longer TTL refuses startup (RELAY-8;
+# sync ADR-0034).
+ttl = "720h"
+
+# How often the reaper deletes TTL-expired Envelopes.
+reap_interval = "1h"
+
+# Maximum Envelope bytes accepted on a Push. The default is the protocol
+# ceiling (65,482 — one Noise frame minus headers, pinned against the sync
+# test vectors). An operator may only LOWER it; a higher value refuses
+# startup (RELAY-8; sync ADR-0025). Compliant clients never exceed 61,440
+# bytes of Sync body.
+max_envelope_bytes = 65482
+
+# Concurrent connections per listener. 0 means no limit — the single
+# exemption from the refuses-on-non-positive rule, documented in ADR-0012.
+max_connections = 0
+
+# Deadlines (RELAY-6; ADR-0012). The handshake deadline also bounds the
+# Transport Version prefix read; the Receive idle deadline re-arms on ANY
+# inbound frame, so an active session is never cut.
+handshake_deadline    = "10s"
+push_session_deadline = "30s"
+receive_idle_deadline = "75s"
+write_deadline        = "30s"
+
+# Graceful-shutdown push drain budget (ADR-0012 step 2).
+shutdown_drain = "10s"
+
+# Abuse limits, keyed per recipient Inbox or per Device key — never per IP
+# address, which this process never reads, stores or logs (ADR-0012).
+max_blobs_per_inbox             = 10000
+max_bytes_per_inbox             = 268435456 # 256 MiB
+push_rate_per_second            = 20.0
+push_rate_burst                 = 500
+max_receive_sessions_per_device = 4
+
+[store]
+# "sqlite" is the only supported backend (ADR-0012). "postgres" exists as
+# experimental, unversioned, for multi-Node clusters.
+type = "sqlite"
+
+# The versioned inbox store (ADR-0013). Created on first start; older
+# stores migrate forward automatically; a store written by a NEWER release
+# is refused unchanged.
+sqlite_path = "/var/lib/trueseal-relay/inbox.db"
+
+# Only when type = "postgres" (experimental):
+# postgres_dsn = "postgres://user:pass@host:5432/trueseal"

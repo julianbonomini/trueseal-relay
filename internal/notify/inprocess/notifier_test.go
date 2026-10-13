@@ -53,12 +53,12 @@ func TestNotifier_CtxCancelClosesChannel(t *testing.T) {
 	cancel()
 
 	select {
-		case _, ok := <-ch:
-			if ok {
-				t.Error("want channel closed, got value")
-			}
-		case <-time.After(time.Second):
-			t.Error("want channel closed within 1s")
+	case _, ok := <-ch:
+		if ok {
+			t.Error("want channel closed, got value")
+		}
+	case <-time.After(time.Second):
+		t.Error("want channel closed within 1s")
 	}
 }
 

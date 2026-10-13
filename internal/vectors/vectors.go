@@ -49,7 +49,7 @@ type Vectors struct {
 			Max  int    `json:"max"`
 		} `json:"refusalExample"`
 	} `json:"transportVersionPrefix"`
-	Frames map[string]json.RawMessage `json:"frames"`
+	Frames         map[string]json.RawMessage `json:"frames"`
 	SealedEnvelope struct {
 		EnvelopeProtoLayout string `json:"envelopeProtoLayout"`
 		Inputs              struct {

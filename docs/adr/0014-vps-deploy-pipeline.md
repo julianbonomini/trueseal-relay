@@ -1,5 +1,7 @@
 # VPS hosting and git-tag deploy pipeline
 
+**Status: superseded (2026-10-13).** Renumbered from ADR-0010 to resolve a duplicate number (the Postgres/cluster ADR keeps 0010). The deploy pipeline it describes no longer matches the code: ADR-0012 removed Dozzle and Caddy from the shipped compose file, and e2e ADR-0002 moved the VPS deploy OUT of the release — promotion publishes an attested GHCR image and the deploy is a separate, manual, exact-version workflow (RELAY-15). Kept for history: the VPS-hosting rationale and the rejected options still apply to a self-hosted single Node.
+
 The relay is self-hosted on a commodity VPS (Hetzner/Hostinger) behind a Cloudflare DNS-only A record. A managed cloud (AWS ECS, Fargate) was considered but rejected — it introduces ceremony, cost, and operator lock-in that contradict the manifesto's "operational simplicity" and "self-hostable by anyone with a VPS and five minutes" principle. If the VPS is compromised the attacker gains nothing useful: the relay is blind by design.
 
 Images are built in GitHub Actions on `git tag v*.*.*`, pushed to GHCR (private), then deployed via SSH: `docker compose pull && docker compose up -d`. The VPS holds a GitHub PAT scoped to `read:packages` only — source code is unreachable. Watchtower was considered but rejected in favour of explicit, observable deploys tied to a release tag.
