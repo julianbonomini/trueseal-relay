@@ -51,12 +51,15 @@ jobs:
           export RELAY_IMAGE=ghcr.io/example/trueseal-relay:v0.0.0-test
           docker compose config -q
           docker compose -f experimental/docker-compose.cluster.yml config -q
-          if grep -n ':latest' docker-compose.yml experimental/docker-compose.cluster.yml; then
-            echo "::error::a compose file references :latest (gate G8)"
-            exit 1
-          fi
-          if grep -rn 'tcplog' experimental/; then
+          # Grep the RENDERED config (interpolation resolved), so the
+          # "never :latest" message inside the ${RELAY_IMAGE:?...} guard
+          # doesn't trip the check but a hardcoded image: foo:latest would.
+          docker compose config | grep -qE 'image:.*:latest' && {
+            echo "::error::shipped compose resolves an image to :latest (gate G8)"; exit 1; }
+          docker compose -f experimental/docker-compose.cluster.yml config | grep -qE 'image:.*:latest' && {
+            echo "::error::cluster compose resolves an image to :latest (gate G8)"; exit 1; }
+          if grep -rnE '^\s*option\s+tcplog' experimental/; then
             echo "::error::HAProxy tcplog must never ship (ADR-0011)"
             exit 1
           fi
-          echo "OK: compose files valid, no :latest, no tcplog"
+          echo "OK: compose files valid, no resolved :latest image, no tcplog directive"

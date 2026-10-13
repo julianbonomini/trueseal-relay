@@ -21,81 +21,56 @@ NK means the sender is anonymous — the relay cannot link a push session to any
 
 ## Deploying
 
-Two compose files — pick one:
+One supported deployment: the shipped `docker-compose.yml` — a single Node on SQLite. It runs **only the relay**: no log viewer, no reverse proxy, no Docker socket mount, and an exact pinned image tag (never `:latest` — gate G8). Logs are private to you (ADR-0012); health stays on the container network, where Docker's own HEALTHCHECK uses it.
 
-| File | Store | Nodes | Use when |
-|------|-------|-------|----------|
-| `docker-compose.yml` | SQLite | 1 | default, single VPS |
-| `docker-compose.cluster.yml` | Postgres | 2+ | you need horizontal scale |
-
-Both include Dozzle (public log viewer) and Caddy (HTTPS). Caddy only starts in the `production` profile — locally services are reachable directly on `localhost`.
+| File | Store | Nodes | Status |
+|------|-------|-------|--------|
+| `docker-compose.yml` | SQLite | 1 | **supported** — the preview deployment |
+| `experimental/docker-compose.cluster.yml` | Postgres | 2+ | experimental (ADR-0012), not versioned, may change or go away |
 
 **Health.** The image carries a Docker `HEALTHCHECK` against `/healthz` (port 7702, container-network only — never published). `/healthz` probes the inbox store: `200` with `{"status":"ok","dev_mode":false,"transport_version":1}` while the store answers, `503` when it is unreadable or stalls, so `docker ps` shows a Node with a broken `inbox.db` as unhealthy instead of green. `transport_version` is the Transport Version from the handshake prefix — the number the Compatibility Table lists.
 
 ---
 
-### Local (no domain, no TLS)
+### Local
 
 **Single node:**
 ```sh
-cp .env.example .env   # fill in keypair if you have one; domains don't matter locally
-docker compose up
+cp .env.example .env   # RELAY_IMAGE is already pinned to an exact version
+mkdir -p /tmp/relay-dev && docker compose up --build   # local build; production pulls the pinned image
 # relay:  localhost:7700 / 7701
-# health: localhost:7702
-# logs:   localhost:8080
+# health: localhost:7702 (container network; add -p to publish for local poking)
 ```
 
-**Cluster:**
+**Cluster (experimental):**
 ```sh
-docker compose -f docker-compose.cluster.yml build --no-cache
-docker compose -f docker-compose.cluster.yml up
+docker compose -f experimental/docker-compose.cluster.yml up --build
 # relay (via HAProxy): localhost:7700 / 7701
-# health (via HAProxy): localhost:7702
-# logs:  localhost:8080
 ```
 
 ---
 
-### Production (VPS + domain + TLS)
+### Production (VPS)
 
-**Prerequisites:**
-- VPS with Docker + Docker Compose
-- Two DNS A records → VPS IP **(Cloudflare: grey cloud / DNS-only — raw TCP ports 7700/7701 cannot be proxied)**:
-  - `relay.yourdomain.com` — health endpoint (HTTPS via Caddy)
-  - `logs.yourdomain.com` — public log viewer (HTTPS via Caddy)
-- Ports open: `80`, `443`, `7700`, `7701`
+**Prerequisites:** a VPS with Docker + the compose plugin, and ports `7700` and `7701` open. No domain, TLS or reverse proxy is required — devices speak Noise-over-TCP to the relay directly and authenticate it by its public key, not by a certificate.
 
-**Single node:**
 ```sh
-# 1. Grab compose file + env template
-curl -fsSL https://github.com/julianbonomini/trueseal-relay/releases/latest/download/docker-compose.yml -o docker-compose.yml
-curl -fsSL https://github.com/julianbonomini/trueseal-relay/releases/latest/download/Caddyfile -o Caddyfile
-curl -fsSL https://github.com/julianbonomini/trueseal-relay/releases/latest/download/.env.example -o .env
+# 1. Grab the compose file and env template at an exact release tag
+V=0.2.0   # the version the Compatibility Table lists for your TrueSeal Release
+curl -fsSL "https://raw.githubusercontent.com/julianbonomini/trueseal-relay/v${V}/docker-compose.yml" -o docker-compose.yml
+curl -fsSL "https://raw.githubusercontent.com/julianbonomini/trueseal-relay/v${V}/.env.example" -o .env
 
-# 2. Fill in RELAY_DOMAIN and LOGS_DOMAIN
+# 2. RELAY_IMAGE is pre-pinned to that exact version in .env — verify it matches $V
 $EDITOR .env
 
-# 3. Start with Caddy
-docker compose --profile production up -d
+# 3. Start
+docker compose up -d
 
-# 4. Get the relay public key — distribute to clients
-docker compose logs relay | grep "public key"
+# 4. Print what clients configure — distribute the Relay Address out-of-band
+docker compose exec relay /trueseal-relay address --host yourdomain.com
 ```
 
-**Cluster:**
-```sh
-curl -fsSL https://github.com/julianbonomini/trueseal-relay/releases/latest/download/docker-compose.cluster.yml -o docker-compose.cluster.yml
-curl -fsSL https://github.com/julianbonomini/trueseal-relay/releases/latest/download/Caddyfile -o Caddyfile
-curl -fsSL https://github.com/julianbonomini/trueseal-relay/releases/latest/download/docker/haproxy.cluster.cfg -o docker/haproxy.cluster.cfg
-curl -fsSL https://github.com/julianbonomini/trueseal-relay/releases/latest/download/.env.example -o .env
-
-# Set HEALTH_UPSTREAM=lb:7702 and your domains in .env
-$EDITOR .env
-
-docker compose -f docker-compose.cluster.yml --profile production up -d
-```
-
-Caddy fetches a Let's Encrypt TLS certificate automatically on first boot.
+Upgrading is: bump `RELAY_IMAGE` in `.env` to the next exact version, `docker compose pull relay && docker compose up -d`. See *Upgrading and the inbox store* below for what happens to `inbox.db`.
 
 ---
 
@@ -146,15 +121,17 @@ The Postgres backend is experimental (ADR-0012); store versioning applies to the
 
 ---
 
-### Public logs
+### Logs are private
 
-All relay logs are publicly readable at `https://logs.yourdomain.com` (Dozzle). This is intentional — logs contain no IP addresses, no sender identities, no content. Anyone can audit that the relay is blind.
+Relay logs are for you, the Operator, and nobody else (ADR-0012). Normal mode logs lifecycle events and field-free error classes — never an IP address, a key, a size or a per-message event. Verbose logging exists only as the explicit per-invocation dev mode (`-dev` / `TRUESEAL_RELAY_DEV=1`). There is no shipped log viewer, and the compose file exposes no log port. See *Logging modes* under Configuration.
 
 ---
 
-### Automatic deploys
+### Releases and deploys
 
-New releases deploy automatically on each `v*.*.*` git tag via GitHub Actions. Three secrets required in your fork:
+Relay releases are independent of the lockstep TrueSeal Release (their own version line, from `0.2.0`) and follow e2e ADR-0002: a candidate image is built from a commit by `candidate.yml` (multi-arch, provenance-attested, referenced by digest in the Release Manifest), the Release Conductor's gate tests exactly those bytes, and `promote.yml` then tags the **identical digest** `vX.Y.Z` with no rebuild.
+
+**No release ever touches infrastructure.** Deploying is a separate, explicit, manual action — `deploy.yml` takes an exact published version (it refuses `latest`, verifies the image's build attestation, and pulls that tag on the VPS). Nothing triggers it from a tag. One-time provisioning, as repo secrets:
 
 | Secret | Value |
 |--------|-------|
@@ -162,19 +139,19 @@ New releases deploy automatically on each `v*.*.*` git tag via GitHub Actions. T
 | `VPS_USER` | SSH user |
 | `DEPLOY_SSH_KEY` | Private half of a deploy SSH keypair |
 
-Add the public half to `~/.ssh/authorized_keys` on the VPS.
+Add the public half to `~/.ssh/authorized_keys` on the VPS, and keep `~/trueseal-relay/` on the VPS holding the shipped `docker-compose.yml` plus a `.env`.
 
 ---
 
-### Clustered (Postgres)
+### Clustered (Postgres, experimental)
 
-Two relay Nodes sharing one Postgres inbox store. HAProxy load-balances raw TCP (ports 7700/7701) across Nodes. Caddy handles HTTPS for health and logs. Any Node handles any Push or Receive Session — no sticky sessions, no Node is load-bearing.
+Two relay Nodes sharing one Postgres inbox store, under `experimental/` per ADR-0012 (not a supported preview deployment; the Postgres store is unversioned). HAProxy load-balances raw TCP (ports 7700/7701) across Nodes with connection logging off (ADR-0011). Any Node handles any Push or Receive Session — no sticky sessions, no Node is load-bearing.
 
 **Cross-node delivery:** when a Push Session lands on Node B for a device whose Receive Session is on Node A, Node B stores the blob in Postgres and sends a `NOTIFY`. Node A is `LISTEN`ing — it wakes up immediately and delivers. No polling, no delay.
 
 **Node restart:** devices reconnect to any healthy Node; the initial inbox drain on reconnect recovers pending blobs. No data is lost.
 
-Edit `docker-compose.cluster.yml` to change the Postgres password and add more Node entries as needed.
+Edit `experimental/docker-compose.cluster.yml` to change the Postgres password and add more Node entries as needed.
 
 ---
 
@@ -268,10 +245,7 @@ go build -tags hostile -o trueseal-relay-hostile ./cmd/trueseal-relay
 
 | Variable | Default | |
 |----------|---------|--|
-| `RELAY_DOMAIN` | — | **Required in prod.** Subdomain for health endpoint |
-| `LOGS_DOMAIN` | — | **Required in prod.** Subdomain for Dozzle log viewer |
-| `HEALTH_UPSTREAM` | `relay:7702` | `relay:7702` (single node) or `lb:7702` (cluster) |
-| `RELAY_IMAGE` | `ghcr.io/julianbonomini/trueseal-relay:latest` | Override to pin a version |
+| `RELAY_IMAGE` | *(required, no default)* | Exact pinned image tag, e.g. `ghcr.io/julianbonomini/trueseal-relay:v0.2.0`. The compose file refuses to start without it; `:latest` is never a valid value (G8) |
 
 ---
 
@@ -302,7 +276,7 @@ To bring your own key instead:
 
 The public key is printed on first start and by `pubkey`. The private key lives in the Docker volume and is never baked into the image. Changing the key breaks every client configuration (ADR-0012), so back it up once.
 
-Clustered deployments (`docker-compose.cluster.yml`, experimental per ADR-0012): the keypair auto-generates into the shared volume on first start; print it with `docker compose -f docker-compose.cluster.yml exec relay-1 /trueseal-relay pubkey`.
+Clustered deployments (`experimental/docker-compose.cluster.yml`, experimental per ADR-0012): the keypair auto-generates into the shared volume on first start; print it with `docker compose -f experimental/docker-compose.cluster.yml exec relay-1 /trueseal-relay pubkey`.
 
 ---
 
