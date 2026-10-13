@@ -22,11 +22,79 @@ func newRouter(t *testing.T) *relay.Router {
 	return relay.NewRouter(store, inprocess.New(), relay.DefaultTTL, 0)
 }
 
-func pushBody(recipient [32]byte, envelope []byte) []byte {
+// protoEnvelope builds a well-formed proto Envelope addressed to
+// recipient, carrying payload as the sealed payload field. The layout
+// matches ADR-0031 / the sync vectors: recipient_pub is field 3 (32
+// bytes), payload is field 6. Since RELAY-3 the router refuses envelopes
+// whose recipient_pub is missing or doesn't match the routing prefix, so
+// every test push goes through this helper.
+func protoEnvelope(recipient [32]byte, payload []byte) []byte {
+	env := []byte{0x1a, 0x20} // field 3, length 32
+	env = append(env, recipient[:]...)
+	env = append(env, 0x32) // field 6, length-delimited
+	env = appendVarint(env, uint64(len(payload)))
+	env = append(env, payload...)
+	return env
+}
+
+func appendVarint(b []byte, v uint64) []byte {
+	for v >= 0x80 {
+		b = append(b, byte(v)|0x80)
+		v >>= 7
+	}
+	return append(b, byte(v))
+}
+
+// pushBody builds a Push body [routing prefix: 32][proto Envelope] whose
+// routing prefix matches the Envelope's recipient_pub — the only shape the
+// router accepts since RELAY-3.
+func pushBody(recipient [32]byte, payload []byte) []byte {
+	envelope := protoEnvelope(recipient, payload)
 	body := make([]byte, 32+len(envelope))
 	copy(body[:32], recipient[:])
 	copy(body[32:], envelope)
 	return body
+}
+
+
+// pushBodySized builds a Push body whose proto Envelope is EXACTLY
+// envelopeSize bytes — for the size-limit boundary tests, which measure
+// the envelope check, not the payload.
+func pushBodySized(recipient [32]byte, envelopeSize int) []byte {
+	// Overhead: field 3 (tag 1 + len 1 + 32) + field 6 (tag 1) + payload
+	// length varint. Solve for the payload length, accounting for the
+	// varint's own size.
+	payload := envelopeSize - 34 - 1
+	// The payload length and its varint's own size must agree; normally a
+	// fixed point exists within a couple of iterations, but cap the loop so
+	// a pathological size (varint-boundary no-fixed-point) fails loudly
+	// instead of spinning.
+	for i := 0; i < 10; i++ {
+		l := varintLen(uint64(payload))
+		if payload+l+35 == envelopeSize {
+			break
+		}
+		payload = envelopeSize - 35 - l
+		if i == 9 {
+			panic("pushBodySized: no fixed point for envelopeSize — not representable as a well-formed envelope")
+		}
+	}
+	if payload < 0 {
+		panic("envelopeSize too small for a well-formed envelope")
+	}
+	if got := 35 + varintLen(uint64(payload)) + payload; got != envelopeSize {
+		panic("pushBodySized: no fixed point for envelopeSize — not representable as a well-formed envelope")
+	}
+	return pushBody(recipient, make([]byte, payload))
+}
+
+func varintLen(v uint64) int {
+	n := 1
+	for v >= 0x80 {
+		v >>= 7
+		n++
+	}
+	return n
 }
 
 var recipientA = relay.RecipientKey(make32(0xAA))
@@ -68,8 +136,10 @@ func TestRouter_PushStores(t *testing.T) {
 
 	select {
 	case got := <-ch:
-		if string(got.Envelope) != string(env) {
-			t.Errorf("want %q, got %q", env, got.Envelope)
+		// The stored/forwarded bytes are exactly the proto Envelope pushed
+		// (verbatim storage; pushBody wraps the payload in one).
+		if want := string(protoEnvelope(make32(0xAA), env)); string(got.Envelope) != want {
+			t.Errorf("want %q, got %q", want, got.Envelope)
 		}
 	case <-time.After(time.Second):
 		t.Error("want envelope delivered, timed out")
@@ -114,8 +184,8 @@ func TestRouter_OnlineDelivery(t *testing.T) {
 
 	select {
 	case got := <-ch:
-		if string(got.Envelope) != "live-blob" {
-			t.Errorf("want 'live-blob', got %q", got.Envelope)
+		if want := string(protoEnvelope(make32(0xAA), []byte("live-blob"))); string(got.Envelope) != want {
+			t.Errorf("want the wrapped live-blob envelope, got %q", got.Envelope)
 		}
 	case <-time.After(time.Second):
 		t.Error("want delivery within 1s, timed out")
@@ -138,8 +208,8 @@ func TestRouter_OfflineThenConnect(t *testing.T) {
 
 	select {
 	case got := <-ch:
-		if string(got.Envelope) != "offline-blob" {
-			t.Errorf("want 'offline-blob', got %q", got.Envelope)
+		if want := string(protoEnvelope(make32(0xBB), []byte("offline-blob"))); string(got.Envelope) != want {
+			t.Errorf("want the wrapped offline-blob envelope, got %q", got.Envelope)
 		}
 	case <-time.After(time.Second):
 		t.Error("want delivery on connect, timed out")
@@ -259,14 +329,14 @@ func TestRouter_NotifyDeliversEachBlobOncePerSession(t *testing.T) {
 	if err := r.OnPush(ctx, pushBody(make32(0xAA), []byte("one"))); err != nil {
 		t.Fatalf("OnPush one: %v", err)
 	}
-	if got := readBlob(); got != "one" {
+	if got := readBlob(); got != string(protoEnvelope(make32(0xAA), []byte("one"))) {
 		t.Fatalf("want first delivery %q, got %q", "one", got)
 	}
 
 	if err := r.OnPush(ctx, pushBody(make32(0xAA), []byte("two"))); err != nil {
 		t.Fatalf("OnPush two: %v", err)
 	}
-	if got := readBlob(); got != "two" {
+	if got := readBlob(); got != string(protoEnvelope(make32(0xAA), []byte("two"))) {
 		t.Fatalf("want second delivery %q, got %q — blob one must not be re-sent on this session", "two", got)
 	}
 
@@ -299,8 +369,8 @@ func TestRouter_DeliveryOrderAcrossNotifies(t *testing.T) {
 		}
 		select {
 		case got := <-ch:
-			if string(got.Envelope) != payload {
-				t.Fatalf("want %q, got %q — arrival order broken", payload, got.Envelope)
+			if want := string(protoEnvelope(make32(0xAA), []byte(payload))); string(got.Envelope) != want {
+				t.Fatalf("want wrapped %q, got %q — arrival order broken", payload, got.Envelope)
 			}
 		case <-time.After(2 * time.Second):
 			t.Fatalf("want %q delivered, timed out", payload)
@@ -351,7 +421,7 @@ func TestRouter_DeliverAckFromForeignDevice_DoesNotDelete(t *testing.T) {
 
 	select {
 	case blob := <-chA2:
-		if string(blob.Envelope) != "for-A" {
+		if string(blob.Envelope) != string(protoEnvelope(make32(0xAA), []byte("for-A"))) {
 			t.Errorf("want 'for-A', got %q", blob.Envelope)
 		}
 	case <-time.After(time.Second):
@@ -393,7 +463,7 @@ func TestRouter_ReconnectAfterAck_NoRedelivery(t *testing.T) {
 	var blobID int64
 	select {
 	case blob := <-ch1:
-		if string(blob.Envelope) != "blob" {
+		if string(blob.Envelope) != string(protoEnvelope(make32(0xAA), []byte("blob"))) {
 			t.Errorf("want 'blob', got %q", blob.Envelope)
 		}
 		blobID = blob.BlobID
@@ -455,8 +525,8 @@ func TestRouter_ReconnectWithoutAck_Redelivers(t *testing.T) {
 	}
 	select {
 	case got := <-ch2:
-		if string(got.Envelope) != "blob" {
-			t.Errorf("want 'blob' on redelivery, got %q", got.Envelope)
+		if want := string(protoEnvelope(make32(0xAA), []byte("blob"))); string(got.Envelope) != want {
+			t.Errorf("want wrapped 'blob' on redelivery, got %q", got.Envelope)
 		}
 	case <-time.After(time.Second):
 		t.Error("want blob re-delivered on reconnect, timed out")
@@ -499,8 +569,7 @@ func newRouterWithLimit(t *testing.T, maxBytes int64) *relay.Router {
 func TestRouter_EnvelopeAtLimitAccepted(t *testing.T) {
 	const limit = 100
 	r := newRouterWithLimit(t, limit)
-	env := make([]byte, limit)
-	if err := r.OnPush(context.Background(), pushBody(make32(0xCC), env)); err != nil {
+	if err := r.OnPush(context.Background(), pushBodySized(make32(0xCC), limit)); err != nil {
 		t.Errorf("want nil, got %v", err)
 	}
 }
@@ -509,8 +578,7 @@ func TestRouter_EnvelopeAtLimitAccepted(t *testing.T) {
 func TestRouter_EnvelopeOverLimitRejected(t *testing.T) {
 	const limit = 100
 	r := newRouterWithLimit(t, limit)
-	env := make([]byte, limit+1)
-	if err := r.OnPush(context.Background(), pushBody(make32(0xCC), env)); err == nil {
+	if err := r.OnPush(context.Background(), pushBodySized(make32(0xCC), limit+1)); err == nil {
 		t.Error("want error for oversized envelope, got nil")
 	}
 }
@@ -519,8 +587,7 @@ func TestRouter_EnvelopeOverLimitRejected(t *testing.T) {
 func TestRouter_OversizedEnvelopeNotStored(t *testing.T) {
 	const limit = 100
 	r := newRouterWithLimit(t, limit)
-	env := make([]byte, limit+1)
-	_ = r.OnPush(context.Background(), pushBody(make32(0xCC), env))
+	_ = r.OnPush(context.Background(), pushBodySized(make32(0xCC), limit+1))
 
 	devCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()

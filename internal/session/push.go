@@ -109,6 +109,10 @@ func pushRefusalReason(err error) ErrorReason {
 		return ReasonTooLarge
 	case errors.Is(err, relay.ErrPushBodyTooShort):
 		return ReasonMalformed
+	case errors.Is(err, relay.ErrPushRecipientMalformed):
+		return ReasonMalformed
+	case errors.Is(err, relay.ErrRecipientMismatch):
+		return ReasonMalformed
 	default:
 		return ReasonInternal
 	}

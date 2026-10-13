@@ -45,16 +45,17 @@ func TestVectors_OversizedPushRefusedTooLarge(t *testing.T) {
 
 	r := relay.NewRouter(store, inprocess.New(), relay.DefaultTTL, int64(v.Protocol.MaxEnvelopeBytes))
 
-	// One byte over the ceiling, with a well-formed routing prefix.
+	// One byte over the ceiling: the size refusal fires before the
+	// envelope is parsed, so a raw oversized envelope suffices.
 	body := make([]byte, 32+v.Protocol.MaxEnvelopeBytes+1)
 	err = r.OnPush(context.Background(), body)
 	if !errors.Is(err, relay.ErrEnvelopeTooLarge) {
 		t.Fatalf("OnPush over the ceiling: err = %v, want ErrEnvelopeTooLarge (maps to reason 0x01 tooLarge)", err)
 	}
 
-	// And exactly AT the ceiling it is accepted (boundary, both sides).
-	body = make([]byte, 32+v.Protocol.MaxEnvelopeBytes)
-	if err := r.OnPush(context.Background(), body); err != nil {
+	// And exactly AT the ceiling a well-formed envelope is accepted
+	// (boundary, both sides) — pushBodySized builds one of an exact size.
+	if err := r.OnPush(context.Background(), pushBodySized(make32(0xCC), v.Protocol.MaxEnvelopeBytes)); err != nil {
 		t.Fatalf("OnPush at the ceiling: %v", err)
 	}
 

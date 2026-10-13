@@ -50,6 +50,14 @@ func NewRouter(s store.InboxStore, n notify.Notifier, ttl time.Duration, maxEnve
 var (
 	ErrPushBodyTooShort = errors.New("relay: push body too short (want ≥ 32 bytes for recipient key)")
 	ErrEnvelopeTooLarge = errors.New("relay: envelope too large")
+	// ErrPushRecipientMalformed: the envelope's recipient_pub field is
+	// missing, not exactly 32 bytes, duplicated or unparseable — the relay
+	// cannot verify the addressee (RELAY-3; ADR-0031).
+	ErrPushRecipientMalformed = errors.New("relay: envelope recipient_pub missing or malformed")
+	// ErrRecipientMismatch: the push routing prefix and the envelope's own
+	// recipient_pub disagree — the pusher is trying to file the blob in an
+	// Inbox it isn't addressed to (RELAY-3; threat-model decision).
+	ErrRecipientMismatch = errors.New("relay: push routing prefix does not match the envelope recipient")
 )
 
 // OnPush implements session.Handler.
@@ -65,6 +73,19 @@ func (r *Router) OnPush(ctx context.Context, body []byte) error {
 
 	if r.maxEnvelopeBytes > 0 && int64(len(envelope)) > r.maxEnvelopeBytes {
 		return fmt.Errorf("%w: %d bytes (limit %d)", ErrEnvelopeTooLarge, len(envelope), r.maxEnvelopeBytes)
+	}
+
+	// RELAY-3 (#40, threat-model decision): the routing prefix must BE the
+	// Envelope's own recipient_pub — the one field sync ADR-0031 leaves
+	// Relay-readable. A pusher that labels a blob with one Inbox's prefix
+	// while the Envelope addresses another is refused (permanent malformed)
+	// and nothing is stored. The payload is never inspected.
+	recipient, err := extractEnvelopeRecipient(envelope)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrPushRecipientMalformed, err)
+	}
+	if recipient != key {
+		return ErrRecipientMismatch
 	}
 
 	if err := r.store.Put(ctx, key[:], envelope, r.ttl); err != nil {
