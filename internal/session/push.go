@@ -139,6 +139,15 @@ func acceptPushSession(parent context.Context, conn net.Conn, relayKey noise.DHK
 		}
 
 		if err := handler.OnPush(ctx, body); err != nil {
+			// Shutdown cut the push off (the session ctx is done): send NO
+			// refusal — the watcher is closing the conn, and a send here
+			// races that close (RELAY-16: the client could read an Error
+			// frame where ADR-0012 specifies a bare cut — "no Ack, so the
+			// sender retries"). The close alone carries the retry signal;
+			// the Blob was never stored.
+			if ctx.Err() != nil {
+				return nil
+			}
 			// Typed refusal (ADR-0008 amended; the ADR-0026 relay contract) —
 			// send the Error frame with its reason code so the client can tell
 			// "never retry" from "retry later". Do NOT Ack, do NOT store.
