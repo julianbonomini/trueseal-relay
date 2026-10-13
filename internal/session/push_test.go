@@ -72,12 +72,14 @@ func TestAcceptPush_ReceivesEnvelopeAndAcks(t *testing.T) {
 		}
 	}()
 
-	// Client: NK handshake → send Push frame → expect Ack
+	// Client: version exchange → NK handshake → send Push frame → expect Ack
+	prologue := clientVersionExchange(t, client)
 	cfg := noise.Config{
 		CipherSuite: noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashBLAKE2s),
 		Pattern:     noise.HandshakeNK,
 		Initiator:   true,
 		PeerStatic:  relayKey.Public,
+		Prologue:    prologue,
 	}
 	hs, err := noise.NewHandshakeState(cfg)
 	if err != nil {
@@ -154,12 +156,14 @@ func TestAcceptPush_CtxCancelledOnConnClose(t *testing.T) {
 		}
 	}()
 
-	// Perform NK handshake
+	// Perform version exchange + NK handshake
+	prologue := clientVersionExchange(t, client)
 	cfg := noise.Config{
 		CipherSuite: noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashBLAKE2s),
 		Pattern:     noise.HandshakeNK,
 		Initiator:   true,
 		PeerStatic:  relayKey.Public,
+		Prologue:    prologue,
 	}
 	hs, err := noise.NewHandshakeState(cfg)
 	if err != nil {
@@ -268,12 +272,14 @@ func TestAcceptPush_WrongRelayKeyRejected(t *testing.T) {
 		acceptDone <- session.AcceptPush(server, relayKey, handler)
 	}()
 
-	// Client initiates NK using the wrong relay public key
+	// Client exchanges versions, then initiates NK using the wrong relay public key
+	prologue := clientVersionExchange(t, client)
 	cfg := noise.Config{
 		CipherSuite: noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashBLAKE2s),
 		Pattern:     noise.HandshakeNK,
 		Initiator:   true,
 		PeerStatic:  wrongKey.Public, // wrong key
+		Prologue:    prologue,
 	}
 	hs, err := noise.NewHandshakeState(cfg)
 	if err != nil {
@@ -334,12 +340,14 @@ func TestAcceptPush_ClosedConnReturnsNil(t *testing.T) {
 		acceptDone <- session.AcceptPush(server, relayKey, handler)
 	}()
 
-	// Complete the NK handshake
+	// Complete the version exchange + NK handshake
+	prologue := clientVersionExchange(t, client)
 	cfg := noise.Config{
 		CipherSuite: noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashBLAKE2s),
 		Pattern:     noise.HandshakeNK,
 		Initiator:   true,
 		PeerStatic:  relayKey.Public,
+		Prologue:    prologue,
 	}
 	hs, err := noise.NewHandshakeState(cfg)
 	if err != nil {
@@ -380,12 +388,14 @@ func TestAcceptPush_NoAckOnOnPushError(t *testing.T) {
 		session.AcceptPush(server, relayKey, handler) //nolint:errcheck
 	}()
 
-	// NK handshake
+	// Version exchange + NK handshake
+	prologue := clientVersionExchange(t, client)
 	cfg := noise.Config{
 		CipherSuite: noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashBLAKE2s),
 		Pattern:     noise.HandshakeNK,
 		Initiator:   true,
 		PeerStatic:  relayKey.Public,
+		Prologue:    prologue,
 	}
 	hs, err := noise.NewHandshakeState(cfg)
 	if err != nil {
@@ -447,12 +457,14 @@ func TestAcceptPush_MultiplePushFrames(t *testing.T) {
 		session.AcceptPush(server, relayKey, handler) //nolint:errcheck
 	}()
 
-	// NK handshake
+	// Version exchange + NK handshake
+	prologue := clientVersionExchange(t, client)
 	cfg := noise.Config{
 		CipherSuite: noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashBLAKE2s),
 		Pattern:     noise.HandshakeNK,
 		Initiator:   true,
 		PeerStatic:  relayKey.Public,
+		Prologue:    prologue,
 	}
 	hs, err := noise.NewHandshakeState(cfg)
 	if err != nil {
@@ -522,12 +534,14 @@ func TestAcceptPush_ErrorFrameOnOnPushError(t *testing.T) {
 		session.AcceptPush(server, relayKey, handler) //nolint:errcheck
 	}()
 
-	// NK handshake
+	// Version exchange + NK handshake
+	prologue := clientVersionExchange(t, client)
 	cfg := noise.Config{
 		CipherSuite: noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashBLAKE2s),
 		Pattern:     noise.HandshakeNK,
 		Initiator:   true,
 		PeerStatic:  relayKey.Public,
+		Prologue:    prologue,
 	}
 	hs, err := noise.NewHandshakeState(cfg)
 	if err != nil {

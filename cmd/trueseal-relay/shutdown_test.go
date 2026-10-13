@@ -1,6 +1,7 @@
 package main_test
 
 import (
+	"io"
 	"net"
 	"path/filepath"
 	"sync"
@@ -100,15 +101,30 @@ func TestGracefulShutdown_NoActiveSessions(t *testing.T) {
 	}
 }
 
-// shutdownXXHandshake performs the Noise XX handshake as the initiator so
-// that AcceptReceive on the server side considers the session established.
+// shutdownXXHandshake performs the ADR-0022 version exchange and then the
+// Noise XX handshake as the initiator so that AcceptReceive on the server
+// side considers the session established.
 func shutdownXXHandshake(t *testing.T, conn net.Conn, deviceKey noise.DHKey) {
 	t.Helper()
+	// Version exchange (the pinned v1 prefix; internal/session/version.go).
+	prefix := []byte{0x54, 0x53, 0x50, 0x00, 0x01}
+	if _, err := conn.Write(prefix); err != nil {
+		t.Fatalf("version exchange write: %v", err)
+	}
+	reply := make([]byte, 1)
+	if _, err := io.ReadFull(conn, reply); err != nil {
+		t.Fatalf("version exchange read: %v", err)
+	}
+	if reply[0] != 0x01 {
+		t.Fatalf("version exchange: relay refused (reply 0x%02x)", reply[0])
+	}
+
 	cfg := noise.Config{
 		CipherSuite:   noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashBLAKE2s),
 		Pattern:       noise.HandshakeXX,
 		Initiator:     true,
 		StaticKeypair: deviceKey,
+		Prologue:      prefix,
 	}
 	hs, err := noise.NewHandshakeState(cfg)
 	if err != nil {

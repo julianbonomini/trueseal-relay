@@ -263,12 +263,14 @@ func TestAcceptReceive_TamperedHandshakeRejected(t *testing.T) {
 		acceptDone <- session.AcceptReceive(server, relayKey, newReceiveHandler())
 	}()
 
-	// Perform the first two XX messages normally
+	// Perform the version exchange, then the first two XX messages normally
+	prologue := clientVersionExchange(t, client)
 	cfg := noise.Config{
 		CipherSuite:   noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashBLAKE2s),
 		Pattern:       noise.HandshakeXX,
 		Initiator:     true,
 		StaticKeypair: deviceKey,
+		Prologue:      prologue,
 	}
 	hs, err := noise.NewHandshakeState(cfg)
 	if err != nil {
@@ -351,11 +353,13 @@ func TestAcceptReceive_ClosedConnReturnsNil(t *testing.T) {
 // Returns (cs_initiator_send, cs_initiator_receive).
 func doXXHandshake(t *testing.T, conn net.Conn, relayPub []byte, deviceKey noise.DHKey) (*noise.CipherState, *noise.CipherState) {
 	t.Helper()
+	prologue := clientVersionExchange(t, conn)
 	cfg := noise.Config{
 		CipherSuite:   noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashBLAKE2s),
 		Pattern:       noise.HandshakeXX,
 		Initiator:     true,
 		StaticKeypair: deviceKey,
+		Prologue:      prologue,
 	}
 	hs, err := noise.NewHandshakeState(cfg)
 	if err != nil {

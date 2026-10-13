@@ -26,11 +26,19 @@ import (
 func AcceptReceive(conn net.Conn, relayKey noise.DHKey, handler Handler) error {
 	defer conn.Close()
 
+	// ADR-0022: the Transport Version prefix precedes the handshake and is
+	// bound into it as the Noise prologue.
+	prologue, err := exchangeTransportVersion(conn)
+	if err != nil {
+		return err
+	}
+
 	cfg := noise.Config{
 		CipherSuite:   noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashBLAKE2s),
 		Pattern:       noise.HandshakeXX,
 		Initiator:     false,
 		StaticKeypair: relayKey,
+		Prologue:      prologue,
 	}
 	hs, err := noise.NewHandshakeState(cfg)
 	if err != nil {
