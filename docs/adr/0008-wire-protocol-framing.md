@@ -1,5 +1,32 @@
 # Wire protocol: raw framing with Ack and Heartbeat control messages
 
+Amended 2026-10-13 by RELAY-5: added the Transport Version prefix exchange
+(sync ADR-0022) and typed Error reason codes (the ADR-0026 relay contract).
+
+## Transport Version prefix (added by RELAY-5)
+
+Every connection — Receive (XX) and Push (NK) — begins with a plaintext
+5-byte Transport Version prefix BEFORE the Noise handshake (sync ADR-0022
+transport-half; the exact bytes are pinned by the sync test vectors,
+checked in Go under gate G5):
+
+```
+client → relay : "TSP" || version:u16 BE        (5 bytes, plaintext)
+relay → client : 0x01                           (supported — proceed)
+               | "unsupported <min>..<max>\n"    (refused — then close)
+```
+
+- On `0x01`, the exact 5 prefix bytes become the Noise prologue on both
+  sides, binding the Transport Version into the handshake hash — a prefix
+  tampered in transit breaks the handshake.
+- The relay speaks exactly one version: its min equals its max
+  (`unsupported 1..1\n` today). There is no negotiation and no
+  compatibility decoder — a pre-version client (no `"TSP"` magic) is
+  refused identically. Version 0 is reserved and always refused.
+- The refusal line is written before the connection closes so the client
+  can always read it; trueseal-sync surfaces it as the connection state
+  `relayVersionUnsupported{min,max}`.
+
 ## Framing
 
 All messages over a Noise session use the framing already defined in trueseal-sync/src/relay.rs:
@@ -20,7 +47,7 @@ Owned by trueseal-sync as the protocol authority (ADR-0005). trueseal-relay impl
 | `0x02` | Deliver | relay → client | `[blob_id: 8 bytes u64 BE][protobuf Envelope bytes]` |
 | `0x03` | Heartbeat | bidirectional | empty |
 | `0x04` | Ack | relay → client | empty |
-| `0x05` | Error | relay → client | empty |
+| `0x05` | Error | relay → client | `[reason: u8]` (see Error semantics) |
 | `0x06` | DeliverAck | client → relay | `[blob_id: 8 bytes u64 BE]` |
 
 ## Push body layout (wire format contract)
@@ -79,17 +106,28 @@ A Push Session that closes before all Acks are received is treated as unconfirme
 
 ## Error semantics
 
-`Error (0x05)` is sent by the relay in response to a `Push` frame that was permanently rejected. It signals that the relay will never accept or store this blob — the client must **not** retry it.
+`Error (0x05)` is sent by the relay when it refuses something. Amended by RELAY-5 (the ADR-0026 relay contract): the body is a **one-byte reason code** so the client can tell permanent refusals (never retry) from temporary ones (retry later). Bit 7 set = temporary.
 
-When `AcceptPush` receives a `Push` frame and the handler returns an error (e.g. the envelope exceeds the size limit), the relay:
-1. Sends an `Error` frame (encrypted, same Noise channel as Ack)
+| Code | Name | Class | Meaning |
+|---|---|---|---|
+| `0x01` | `tooLarge` | permanent | Envelope over the relay's size limit (ADR-0025: a size refusal is permanent and typed) |
+| `0x02` | `malformed` | permanent | Unparseable framing, an unknown frame type, or an undeliverable body |
+| `0x81` | `inboxFull` | temporary | Recipient Inbox quota exhausted (RELAY-6) |
+| `0x82` | `rateLimited` | temporary | Per-recipient rate limit fired (RELAY-6) |
+| `0x83` | `unavailable` | temporary | Inbox store unavailable |
+| `0x84` | `internal` | temporary | Unclassified internal failure |
+
+When `AcceptPush` receives a `Push` frame and the handler returns an error, the relay:
+1. Sends an `Error` frame carrying the classified reason code (encrypted, same Noise channel as Ack)
 2. Does **not** send an `Ack`
 3. Does **not** store the blob
 4. Continues reading the session — the rejection is per-blob, not per-session
 
-The body is empty. No diagnostic detail is included — the relay is blind by design and has no obligation to explain rejection to an anonymous sender.
+**Unknown frame types** (and malformed framing, and known types that do not belong on the session kind) get a generic `Error` with the `malformed` code that **echoes no frame bytes** (sync ADR-0022). A zero-length Error body remains well-formed for compatibility with the original empty-body layout — the sync vectors pin an empty-body Error as a valid frame — but the relay always sends a code.
 
-**Permanent rejection, non-retryable.** An `Error` response means the blob will never be accepted on any retry. trueseal-sync (protocol authority) must discard the blob from its outbox on receipt of an `Error` frame. Retrying would waste bandwidth and never succeed.
+The code is the only diagnostic — no echoed bytes, no strings. The relay is blind by design; the reason code is the contract, not an explanation.
+
+**Permanent rejection, non-retryable.** A permanent `Error` means the blob will never be accepted on any retry; trueseal-sync discards it from the outbox (a size refusal is the ADR-0025 case). A temporary `Error` (bit 7 set) means the client may retry later — trueseal-sync's outbox treats it as a temporary relay failure class (ADR-0026). The current client maps any Error body to its permanent PushRejected path; parsing the codes is a client-side refinement that changes no wire bytes.
 
 ## Two-layer enforcement model
 
