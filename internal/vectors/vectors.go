@@ -50,6 +50,13 @@ type Vectors struct {
 		} `json:"refusalExample"`
 	} `json:"transportVersionPrefix"`
 	Frames map[string]json.RawMessage `json:"frames"`
+	SealedEnvelope struct {
+		EnvelopeProtoLayout string `json:"envelopeProtoLayout"`
+		Inputs              struct {
+			RecipientNoisePub string `json:"recipientNoisePub"`
+		} `json:"inputs"`
+		EnvelopeProtoHex string `json:"envelopeProtoHex"`
+	} `json:"sealedEnvelope"`
 }
 
 // FrameVector is one entry of the frames section.

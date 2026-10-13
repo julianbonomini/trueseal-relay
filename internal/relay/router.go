@@ -50,6 +50,14 @@ func NewRouter(s store.InboxStore, n notify.Notifier, ttl time.Duration, maxEnve
 var (
 	ErrPushBodyTooShort = errors.New("relay: push body too short (want ≥ 32 bytes for recipient key)")
 	ErrEnvelopeTooLarge = errors.New("relay: envelope too large")
+	// ErrPushRecipientMalformed: the envelope's recipient_pub field is
+	// missing, not exactly 32 bytes, duplicated or unparseable — the relay
+	// cannot verify the addressee (RELAY-3; ADR-0031).
+	ErrPushRecipientMalformed = errors.New("relay: envelope recipient_pub missing or malformed")
+	// ErrRecipientMismatch: the push routing prefix and the envelope's own
+	// recipient_pub disagree — the pusher is trying to file the blob in an
+	// Inbox it isn't addressed to (RELAY-3; threat-model decision).
+	ErrRecipientMismatch = errors.New("relay: push routing prefix does not match the envelope recipient")
 )
 
 // OnPush implements session.Handler.
