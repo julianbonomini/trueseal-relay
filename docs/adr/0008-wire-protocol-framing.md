@@ -135,26 +135,26 @@ When `AcceptPush` receives a `Push` frame and the handler returns an error, the 
 
 The code is the only diagnostic — no echoed bytes, no strings. The relay is blind by design; the reason code is the contract, not an explanation.
 
-**Permanent rejection, non-retryable.** A permanent `Error` means the blob will never be accepted on any retry; trueseal-sync discards it from the outbox (a size refusal is the ADR-0025 case). A temporary `Error` (bit 7 set) means the client may retry later — trueseal-sync's outbox treats it as a temporary relay failure class (ADR-0026). The current client maps any Error body to its permanent PushRejected path; parsing the codes is a client-side refinement that changes no wire bytes.
+**Permanent rejection, non-retryable.** A permanent `Error` means the blob will never be accepted on any retry; trueseal-sync discards it from the outbox and reports it typed (a size refusal surfaces as `sendFailed(tooLarge)` — the ADR-0025 case). A temporary `Error` (bit 7 set) means the client may retry later — trueseal-sync's outbox backs off and retries (ADR-0026). The client classifies codes by bit 7 (trueseal-sync, 2026-10-13); unknown codes fall back on their bit-7 class, so new reasons stay forward-compatible.
 
 ## Two-layer enforcement model
 
 Envelope size limits are enforced at two layers:
 
-**Layer 1 — trueseal-sync (protocol authority, primary):** trueseal-sync enforces `MAX_ENVELOPE_BYTES` (1 MiB) before constructing a Push frame. Compliant clients never produce a Push frame with an oversized envelope. This is the primary enforcement point.
+**Layer 1 — trueseal-sync (protocol authority, primary):** trueseal-sync enforces the Protocol Size Limit — 61,440 bytes of `Sync` body — synchronously in `send()` (sync ADR-0025). Compliant clients never produce a Push frame with an oversized envelope. This is the primary enforcement point.
 
-**Layer 2 — trueseal-relay (backstop):** The relay enforces `max_envelope_bytes` (default 1 MiB, configurable via `relay.max_envelope_bytes` or `TRUESEAL_RELAY_MAX_ENVELOPE_BYTES`) on `body[32:]` of every received Push frame. If the limit is exceeded, the relay sends an `Error` frame and discards the blob. This layer exists as a backstop against non-compliant or malicious clients — it does not imply the relay inspects content. The relay rejects by size, never by content.
+**Layer 2 — trueseal-relay (backstop):** The relay enforces `max_envelope_bytes` (default **65,482** — the protocol ceiling, one shared constant pinned transitively against the sync test vectors; configurable via `relay.max_envelope_bytes` or `TRUESEAL_RELAY_MAX_ENVELOPE_BYTES`) on `body[32:]` of every received Push frame. An operator may only LOWER the limit — a configured value above the ceiling refuses startup (RELAY-8; sync ADR-0025). If the limit is exceeded, the relay sends a permanent `Error (tooLarge)` and stores nothing. This layer exists as a backstop against non-compliant or malicious clients — it does not imply the relay inspects content. The relay rejects by size, never by content.
 
-The 1 MiB default is sourced from `MAX_ENVELOPE_BYTES` in trueseal-sync (protocol authority), ensuring both layers agree on the limit by default.
+The ceiling is derived from the Noise frame budget (u16 length prefix 65,535 − 16-byte AEAD tag − 5-byte frame header − 32-byte recipient key prefix), so both layers agree by construction rather than by convention.
 
 ## Heartbeat
 
-Sent by the relay on idle Receive Sessions to prevent NAT/firewall timeout (see ADR-0006). Client echoes back a Heartbeat. Either side may initiate. Interval is operator-configured.
+Client-initiated (ADR-0012): the client sends a Heartbeat every 25 s on the Receive Session. The relay echoes every inbound Heartbeat (an echo may be dropped when the session's writer is behind — Deliver traffic has priority), and applies a 75 s idle read deadline re-armed on ANY inbound frame (RELAY-6). The relay never initiates heartbeats. An earlier draft of this section had the relay initiating on idle sessions — that is superseded.
 
 ## Envelope size limit
 
-The relay enforces a maximum size on the envelope bytes (`body[32:]` of the Push frame body). If the envelope exceeds the limit, the relay returns an error and does **not** send an Ack — the client outbox retains the blob.
+The relay enforces a maximum size on the envelope bytes (`body[32:]` of the Push frame body). If the envelope exceeds the limit, the relay sends a permanent typed `Error (tooLarge, 0x01)` and does **not** send an Ack and stores nothing — a size refusal is permanent and typed (sync ADR-0025), so the client discards the blob from its outbox and reports `sendFailed(tooLarge)` rather than retaining it.
 
-Default: **1 048 576 bytes (1 MiB)**. Configurable via `relay.max_envelope_bytes` in `relay.toml` or `TRUESEAL_RELAY_MAX_ENVELOPE_BYTES` env var.
+Default: **65,482 bytes** — the protocol ceiling, a single shared constant pinned transitively against the sync test vectors (RELAY-8). Configurable via `relay.max_envelope_bytes` in the config file or `TRUESEAL_RELAY_MAX_ENVELOPE_BYTES` env var — an operator may only LOWER it; a value above the ceiling refuses startup.
 
-Rationale: a compromised or malicious peer who knows a recipient public key can push arbitrarily large blobs, exhausting InboxStore disk. The limit is applied before persistence. The default of 1 MiB comfortably covers all legitimate trueseal-sync payloads (clipboard text, secrets, GroupManifest messages) while bounding worst-case per-blob storage impact.
+Rationale: a compromised or malicious peer who knows a recipient public key can push arbitrarily large blobs, exhausting InboxStore disk. The limit is applied before persistence. The ceiling comfortably covers every legitimate trueseal-sync payload (a compliant client is limited to 61,440 bytes of Sync body) while bounding worst-case per-blob storage impact.
