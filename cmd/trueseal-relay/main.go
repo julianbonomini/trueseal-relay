@@ -26,10 +26,53 @@ import (
 	sqlitestore "github.com/julianbonomini/trueseal-relay/internal/store/sqlite"
 )
 
-// logConnectionRefused reports a connection-limit refusal.
-// ADR-0012: no client metadata — the peer address is never logged.
-func logConnectionRefused(kind string, max int) {
-	log.Printf("%s: connection limit reached (%d) — rejecting connection", kind, max)
+// refusalCounters counts connection-limit refusals per listener (RELAY-6).
+// ADR-0012: no refusal is logged in normal mode — a port scan must not be
+// able to flood the operator's logs, and there is no client metadata to
+// log anyway. The counters exist so RELAY-9's dev mode and any future
+// aggregate metrics can surface them without touching the accept loops.
+var refusalCounters struct {
+	push, recv atomic.Int64
+}
+
+// sessionErrorLog rate-limits per-connection session error lines (RELAY-6).
+// Normal mode may log errors (ADR-0012), but a scanner sending garbage at
+// the listener must not produce one line per connection: at most one line
+// per listener kind per minute is emitted, carrying the suppressed count.
+type sessionErrorLog struct {
+	mu         sync.Mutex
+	last       map[string]time.Time
+	suppressed map[string]int
+	now        func() time.Time
+}
+
+func newSessionErrorLog(now func() time.Time) *sessionErrorLog {
+	return &sessionErrorLog{last: map[string]time.Time{}, suppressed: map[string]int{}, now: now}
+}
+
+const sessionErrorLogInterval = time.Minute
+
+// logf emits "kind session error" at most once per interval per kind.
+// Later lines in a window report how many were suppressed since the last
+// emitted line. Field-free: the underlying error is never printed — it can
+// wrap net.OpError, whose string contains the peer address (ADR-0012).
+func (l *sessionErrorLog) logf(kind string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := l.now()
+	last, seen := l.last[kind]
+	l.suppressed[kind]++
+	if seen && now.Sub(last) < sessionErrorLogInterval {
+		return
+	}
+	n := l.suppressed[kind]
+	l.suppressed[kind] = 0
+	l.last[kind] = now
+	if n > 1 {
+		log.Printf("%s session error (%d since last report)", kind, n)
+	} else {
+		log.Printf("%s session error", kind)
+	}
 }
 
 // usage lists the subcommands. RELAY-12: keypair operations are subcommands,
@@ -276,7 +319,23 @@ func serve(args []string) {
 		log.Fatalf("unsupported store type: %s", cfg.Store.Type)
 	}
 
-	router := relay.NewRouter(inbox, notifier, cfg.Relay.TTL, cfg.Relay.MaxEnvelopeBytes)
+	// RELAY-6 (ADR-0012): the abuse limits and liveness deadlines, all
+	// operator-configurable (short values for e2e). Every limit is keyed on
+	// the recipient Inbox, the Device key or a global count — never on a
+	// peer address, which this process never reads, stores or logs.
+	router := relay.NewRouterWithLimits(inbox, notifier, cfg.Relay.TTL, cfg.Relay.MaxEnvelopeBytes, relay.Limits{
+		MaxBlobsPerInbox:            cfg.Relay.MaxBlobsPerInbox,
+		MaxBytesPerInbox:            cfg.Relay.MaxBytesPerInbox,
+		PushRatePerSecond:           cfg.Relay.PushRatePerSecond,
+		PushRateBurst:               float64(cfg.Relay.PushRateBurst),
+		MaxReceiveSessionsPerDevice: cfg.Relay.MaxReceiveSessionsPerDevice,
+	})
+	deadlines := session.Deadlines{
+		Handshake:   cfg.Relay.HandshakeDeadline,
+		PushSession: cfg.Relay.PushSessionDeadline,
+		ReceiveIdle: cfg.Relay.ReceiveIdleDeadline,
+		Write:       cfg.Relay.WriteDeadline,
+	}
 	reaper := store.NewReaper(inbox, cfg.Relay.ReapInterval)
 
 	// Start TTL reaper
@@ -307,8 +366,7 @@ func serve(args []string) {
 	max := cfg.Relay.MaxConnections
 	pushSem := make(chan struct{}, max)
 	recvSem := make(chan struct{}, max)
-	var pushActive, recvActive atomic.Int64
-	watermark := int64(max) * 75 / 100 // warn at 75% capacity
+	sessionErrs := newSessionErrorLog(time.Now)
 
 	go func() {
 		for {
@@ -319,7 +377,9 @@ func serve(args []string) {
 			select {
 			case pushSem <- struct{}{}:
 			default:
-				logConnectionRefused("push", max)
+				// ADR-0012: no refusal is logged in normal mode — counted for
+				// dev mode / future metrics, nothing more.
+				refusalCounters.push.Add(1)
 				conn.Close()
 				continue
 			}
@@ -327,19 +387,10 @@ func serve(args []string) {
 			go func(c net.Conn) {
 				defer wg.Done()
 				defer func() { <-pushSem }()
-				n := pushActive.Add(1)
-				defer pushActive.Add(-1)
-				if n >= watermark {
-					log.Printf("push: active connections at %d/%d (%.0f%% capacity) — consider investigating stalled connections (P2)", n, max, float64(n)/float64(max)*100)
-				}
-				start := time.Now()
-				if err := session.AcceptPush(c, kp.DHKey, router); err != nil {
-					// Field-free: session errors can wrap net.OpError, whose
-					// string contains the peer address (ADR-0012).
-					log.Printf("push session error")
-				}
-				if d := time.Since(start); d > 30*time.Second {
-					log.Printf("push: long-lived session closed (no read deadline — see P2)")
+				if err := session.AcceptPushWithDeadlines(c, kp.DHKey, router, deadlines); err != nil {
+					// Rate-limited and field-free: one scanner must not fill
+					// the log, and the error can wrap a peer address.
+					sessionErrs.logf("push")
 				}
 			}(conn)
 		}
@@ -354,7 +405,7 @@ func serve(args []string) {
 			select {
 			case recvSem <- struct{}{}:
 			default:
-				logConnectionRefused("recv", max)
+				refusalCounters.recv.Add(1)
 				conn.Close()
 				continue
 			}
@@ -362,19 +413,8 @@ func serve(args []string) {
 			go func(c net.Conn) {
 				defer wg.Done()
 				defer func() { <-recvSem }()
-				n := recvActive.Add(1)
-				defer recvActive.Add(-1)
-				if n >= watermark {
-					log.Printf("recv: active connections at %d/%d (%.0f%% capacity) — consider investigating stalled connections (P2)", n, max, float64(n)/float64(max)*100)
-				}
-				start := time.Now()
-				if err := session.AcceptReceive(c, kp.DHKey, router); err != nil {
-					// Field-free: session errors can wrap net.OpError, whose
-					// string contains the peer address (ADR-0012).
-					log.Printf("receive session error")
-				}
-				if d := time.Since(start); d > 24*time.Hour {
-					log.Printf("recv: very long-lived session closed (no read deadline — see P2)")
+				if err := session.AcceptReceiveWithDeadlines(c, kp.DHKey, router, deadlines); err != nil {
+					sessionErrs.logf("receive")
 				}
 			}(conn)
 		}

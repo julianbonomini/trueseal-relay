@@ -2,6 +2,7 @@ package session_test
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"testing"
 	"time"
@@ -33,6 +34,22 @@ func TestPushRefusal_UnclassifiedGetsInternalCode(t *testing.T) {
 	body := pushRefusalBody(t, errors.New("disk on fire"))
 	if len(body) != 1 || body[0] != 0x84 {
 		t.Fatalf("want Error body [0x84] (internal), got %x", body)
+	}
+}
+
+// RELAY-6: the ADR-0012 abuse-limit refusals reach the wire with their
+// typed TEMPORARY codes (ADR-0026: the client retries these later).
+func TestPushRefusal_InboxFullGetsTemporaryCode(t *testing.T) {
+	body := pushRefusalBody(t, relay.ErrInboxFull)
+	if len(body) != 1 || body[0] != 0x81 {
+		t.Fatalf("want Error body [0x81] (inboxFull, temporary), got %x", body)
+	}
+}
+
+func TestPushRefusal_RateLimitedGetsTemporaryCode(t *testing.T) {
+	body := pushRefusalBody(t, fmt.Errorf("wrap: %w", relay.ErrRateLimited))
+	if len(body) != 1 || body[0] != 0x82 {
+		t.Fatalf("want Error body [0x82] (rateLimited, temporary), got %x", body)
 	}
 }
 

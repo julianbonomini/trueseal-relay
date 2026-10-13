@@ -103,7 +103,7 @@ func acceptPushSession(conn net.Conn, relayKey noise.DHKey, handler Handler, d D
 				return nil
 			}
 			return formatErr("push: read frame", err)
-	}
+		}
 
 		plain, err := cs1.Decrypt(nil, nil, raw)
 		if err != nil {
