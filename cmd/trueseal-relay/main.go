@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -66,12 +67,16 @@ func main() {
 }
 
 // configFlags parses the shared -config/-no-config flags used by the relay
-// and its subcommands.
+// and its subcommands. Stray positional arguments are a caller-error —
+// usually the doubled Docker path shape — so they fail loudly (RELAY-12).
 func configFlags(args []string) (configPath string) {
 	fs := flag.NewFlagSet("trueseal-relay", flag.ExitOnError)
 	cfgPath := fs.String("config", "relay.toml", "path to TOML config file")
 	noConfig := fs.Bool("no-config", false, "skip config file loading; use env vars only (Docker-friendly)")
 	_ = fs.Parse(args)
+	if fs.NArg() > 0 {
+		log.Fatalf("unexpected argument %q — did you mean a subcommand?\n\n%s", fs.Arg(0), usage)
+	}
 	if *noConfig {
 		return ""
 	}
@@ -101,8 +106,14 @@ func runAddress(args []string) {
 	cfgPath := fs.String("config", "relay.toml", "path to TOML config file")
 	noConfig := fs.Bool("no-config", false, "skip config file loading; use env vars only (Docker-friendly)")
 	_ = fs.Parse(args)
+	if fs.NArg() > 0 {
+		log.Fatalf("unexpected argument %q\n\n%s", fs.Arg(0), usage)
+	}
 	if *host == "" {
 		log.Fatalf("address: --host is required (the relay cannot know its public host)")
+	}
+	if err := validateHost(*host); err != nil {
+		log.Fatalf("address: %v", err)
 	}
 	configPath := *cfgPath
 	if *noConfig {
@@ -127,6 +138,19 @@ func runAddress(args []string) {
 	fmt.Printf("trueseal://%x@%s:%s?push=%s\n", kp.Public, *host, receivePort, pushPort)
 }
 
+// validateHost rejects hosts that would corrupt the ADR-0028 grammar.
+// Follow-up for SYNC-15's Rust parser (recorded for BIBLE): this grammar
+// deliberately does NOT validate port range (a numeric port is accepted
+// as-is), leading zeros, or IPv6 literals (which would need brackets the
+// grammar doesn't define) — the core parser decides those, and this check
+// only guarantees the printed address parses back into its parts.
+func validateHost(host string) error {
+	if strings.ContainsAny(host, ":@?") {
+		return fmt.Errorf("invalid --host %q: must not contain ':', '@' or '?' (it would corrupt the Relay Address grammar)", host)
+	}
+	return nil
+}
+
 // listenPort extracts the port from a listen address like ":7700" or
 // "0.0.0.0:7700".
 func listenPort(addr string) (string, error) {
@@ -147,6 +171,9 @@ func runGenkey(args []string) {
 	fs := flag.NewFlagSet("genkey", flag.ExitOnError)
 	keyOut := fs.String("keyout", "keypair.hex", "keypair output path")
 	_ = fs.Parse(args)
+	if fs.NArg() > 0 {
+		log.Fatalf("unexpected argument %q\n\n%s", fs.Arg(0), usage)
+	}
 	if err := keypair.Generate(*keyOut); err != nil {
 		log.Fatalf("genkey: %v", err)
 	}

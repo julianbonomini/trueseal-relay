@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/flynn/noise"
@@ -41,33 +42,51 @@ func Load(path string) (*KeyPair, error) {
 }
 
 // Generate creates a new random X25519 keypair and writes the hex-encoded
-// private key to path (mode 0600). The write is create-exclusive: if the
-// file already exists, Generate fails with ErrExists and leaves it untouched,
-// so a stray genkey can never destroy the relay key (RELAY-12).
+// private key to path (mode 0600). The write is create-exclusive and atomic:
+// the key is written to a temp file in the same directory and hard-linked
+// into place, so the only observable states are "no file" and "complete
+// file" — a crash can never leave a partial keyfile that wedges every later
+// start (RELAY-12). If the file already exists, Generate fails with ErrExists
+// and leaves it untouched: a stray genkey can never destroy the relay key.
 func Generate(path string) error {
-	dhKey, err := noise.DH25519.GenerateKeypair(rand.Reader)
+	hexKey, err := GenerateHex()
 	if err != nil {
-		return fmt.Errorf("keypair: generate: %w", err)
+		return err
 	}
-	data := []byte(hex.EncodeToString(dhKey.Private) + "\n")
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".keypair.tmp-*")
 	if err != nil {
+		return fmt.Errorf("keypair: create temp for %s: %w", path, err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op once the link succeeds and we remove it
+	if _, err := tmp.WriteString(hexKey + "\n"); err != nil {
+		tmp.Close()
+		return fmt.Errorf("keypair: write temp for %s: %w", path, err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("keypair: sync temp for %s: %w", path, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("keypair: close temp for %s: %w", path, err)
+	}
+	// link(2) is atomic and refuses to replace an existing path — the
+	// create-exclusive gate. The temp file never outlives this function.
+	if err := os.Link(tmpName, path); err != nil {
 		if errors.Is(err, fs.ErrExist) {
 			return fmt.Errorf("keypair: %s already exists — refusing to replace the relay key: %w", path, ErrExists)
 		}
-		return fmt.Errorf("keypair: write %s: %w", path, err)
-	}
-	defer f.Close()
-	if _, err := f.Write(data); err != nil {
-		return fmt.Errorf("keypair: write %s: %w", path, err)
+		return fmt.Errorf("keypair: install %s: %w", path, err)
 	}
 	return nil
 }
 
 // LoadOrGenerate loads the keypair at path, or generates one at mode 0600 on
-// first start. generated reports which happened. If two first starts race,
-// the loser's create-exclusive write fails with ErrExist and it loads the
-// winner's key — both end up with the same relay keypair.
+// first start. generated reports which happened — including in a race: the
+// loser of two racing first starts loads the winner's key and reports
+// generated=false, so the startup log line stays truthful (RELAY-12). A
+// corrupt or partial file is REFUSED with its underlying error, never
+// regenerated over: only the Operator replaces a relay key.
 func LoadOrGenerate(path string) (kp *KeyPair, generated bool, err error) {
 	kp, err = Load(path)
 	if err == nil {
@@ -76,15 +95,20 @@ func LoadOrGenerate(path string) (kp *KeyPair, generated bool, err error) {
 	if !errors.Is(err, fs.ErrNotExist) {
 		return nil, false, err
 	}
-	if genErr := Generate(path); genErr != nil && !errors.Is(genErr, ErrExists) {
+	genErr := Generate(path)
+	switch {
+	case genErr == nil:
+		generated = true
+	case errors.Is(genErr, ErrExists):
+		generated = false // a racing first start won; fall through and load its key
+	default:
 		return nil, false, genErr
 	}
-	// Either we just generated it, or a racing process beat us to it.
 	kp, err = Load(path)
 	if err != nil {
 		return nil, false, err
 	}
-	return kp, true, nil
+	return kp, generated, nil
 }
 
 // ParseHex parses a hex-encoded 32-byte X25519 private key, as supplied via

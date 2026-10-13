@@ -28,8 +28,8 @@ docker-down:
 # Print the relay public key (what clients configure). The keypair is
 # auto-generated on first start; to supply your own, set TRUESEAL_RELAY_KEYPAIR_HEX.
 pubkey:
-	docker compose exec relay trueseal-relay pubkey
+	docker compose exec relay /trueseal-relay pubkey
 
 # Print the Relay Address (sync ADR-0028) for clients: make address HOST=relay.example.com
 address:
-	docker compose exec relay trueseal-relay address --host $(HOST)
+	docker compose exec relay /trueseal-relay address --host $(HOST)

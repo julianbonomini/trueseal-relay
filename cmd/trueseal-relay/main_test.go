@@ -1,18 +1,65 @@
 package main
 
 import (
+	"bytes"
 	"encoding/hex"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/julianbonomini/trueseal-relay/internal/keypair"
 )
+
+type lockedBuf struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuf) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuf) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// TestLogConnectionRefused_NoAddress is the RELAY-4 regression test for the
+// refused-connection path (issue #41, ADR-0012): the relay never logs a
+// client address, even when rejecting a connection at the limit.
+//
+// RED on the defect: the pre-fix refusal line included conn.RemoteAddr().
+func TestLogConnectionRefused_NoAddress(t *testing.T) {
+	var lb lockedBuf
+	prev := log.Writer()
+	log.SetOutput(&lb)
+	defer log.SetOutput(prev)
+
+	// The helper takes no peer address at all (ADR-0012: the relay never
+	// logs, stores or uses IPs). The banned strings mirror what a refusal
+	// line would contain if a RemoteAddr leaked back in.
+	logConnectionRefused("push", 1000)
+
+	out := lb.String()
+	if !strings.Contains(out, "push") || !strings.Contains(out, "1000") {
+		t.Errorf("refusal log lost its operator-useful content: %q", out)
+	}
+	for _, banned := range []string{"203.0.113.7", "5555", "addr="} {
+		if strings.Contains(out, banned) {
+			t.Errorf("refusal log contains client address %q: %q", banned, out)
+		}
+	}
+}
 
 // buildBinary compiles the real relay binary once per test run, so the tests
 // below exercise the exact artifact the Dockerfile and entrypoint run.
@@ -171,6 +218,50 @@ func TestAddress_MatchesADR0028Grammar(t *testing.T) {
 	}
 	if m[3] != "8800" || m[4] != "8801" {
 		t.Fatalf("non-default ports = %s/?push=%s, want 8800/?push=8801", m[3], m[4])
+	}
+}
+
+// RELAY-12 (review P2.3): a --host containing ':', '@' or '?' would corrupt
+// the ADR-0028 grammar; it is rejected before anything is printed.
+func TestAddress_RejectsGrammarBreakingHost(t *testing.T) {
+	bin := buildBinary(t)
+	keyPath := filepath.Join(t.TempDir(), "keypair.hex")
+	if err := keypair.Generate(keyPath); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	for _, host := range []string{"evil.com:1@real.com", "a?push=1", "a:b"} {
+		cmd := exec.Command(bin, "address", "--host", host)
+		cmd.Env = append(os.Environ(), commandEnv(t, keyPath)...)
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			t.Errorf("address --host %q exited 0 — a corrupting host was accepted", host)
+			continue
+		}
+		if strings.Contains(string(out), "trueseal://") {
+			t.Errorf("address --host %q printed an address before failing: %s", host, out)
+		}
+	}
+}
+
+// RELAY-12 (review P2.4): subcommands reject stray positional arguments
+// instead of silently ignoring them.
+func TestSubcommands_RejectStrayPositionals(t *testing.T) {
+	bin := buildBinary(t)
+	keyPath := filepath.Join(t.TempDir(), "keypair.hex")
+	if err := keypair.Generate(keyPath); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	for _, args := range [][]string{{"pubkey", "bogus"}, {"genkey", "bogus"}, {"address", "--host", "h", "bogus"}} {
+		cmd := exec.Command(bin, args...)
+		cmd.Env = append(os.Environ(), commandEnv(t, keyPath)...)
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			t.Errorf("%v exited 0 — stray positional was silently ignored", args)
+			continue
+		}
+		if !strings.Contains(string(out), "unexpected argument") {
+			t.Errorf("%v failed without guidance: %s", args, out)
+		}
 	}
 }
 

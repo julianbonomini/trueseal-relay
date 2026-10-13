@@ -103,17 +103,18 @@ Auto-generated on first start (mode 0600, never overwritten), stored in the `rel
 
 ```sh
 # Public key
-docker compose exec relay trueseal-relay pubkey
+docker compose exec relay /trueseal-relay pubkey
 
 # Relay Address
-docker compose exec relay trueseal-relay address --host yourdomain.com
+docker compose exec relay /trueseal-relay address --host yourdomain.com
 ```
 
 To bring your own:
 
 ```sh
-# Generate and print hex (create-exclusive — never overwrites an existing file)
-docker compose run --rm relay trueseal-relay genkey -keyout /data/keypair.hex
+# Generate and print hex (create-exclusive — never overwrites an existing file).
+# The entrypoint execs the binary, so 'genkey' is the binary's first argument.
+docker compose run --rm relay genkey -keyout /data/keypair.hex
 
 # Set in .env
 TRUESEAL_RELAY_KEYPAIR_HEX=your_hex_key_here
@@ -204,7 +205,7 @@ Full annotated example: [`config/relay.toml`](config/relay.toml).
 
 The relay's X25519 keypair is used in both Noise handshakes. Devices verify it before exchanging any data — distribute the public key to clients out-of-band.
 
-On first start the relay generates the keypair itself (mode 0600, create-exclusive — an existing key is never overwritten). Print what clients configure:
+On first start the relay generates the keypair itself (mode 0600, create-exclusive — an existing key is never overwritten). Print what clients configure (inside Docker the binary lives at the absolute path `/trueseal-relay`):
 
 ```sh
 # Docker
